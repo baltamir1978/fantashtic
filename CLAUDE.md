@@ -330,6 +330,13 @@ Hecho ya (sin riesgo, no depende de ninguna medida):
 - **Trampa segura**: el light sleep tumba el USB-Serial-JTAG y se pierde la consola. Hay que
   activarlo solo con la pantalla dormida, o detrás de una bandera de compilación, o no habrá
   forma de depurar nada.
+- **IMPLEMENTADO Y DESACTIVADO el 29-jul**: con él activo, el nodo se queda **sordo y mudo** en
+  cuanto la pantalla se duerme. Está detrás de `-DFT_LIGHT_SLEEP`. Ver `ESTADO.md` para la
+  medida y, sobre todo, para el **siguiente paso**: mirar cómo lo hacen Meshtastic y MeshCore,
+  que corren sobre el mismo SX1262 con RadioLib. La hipótesis a comprobar primero es que usen
+  `esp_sleep_enable_gpio_wakeup()` en vez de `esp_sleep_enable_ext1_wakeup()`: `ext1` mueve el
+  pin al dominio RTC y eso es lo que se sospecha que mata la ISR de `setDio1Action()`, mientras
+  que `gpio_wakeup` despierta desde light sleep sin sacarlo del dominio digital.
 - `PIN_KB_INT` (GPIO 11) **no se usa hoy**: el teclado se sondea. Para el light sleep hay que
   cablearlo como fuente de despertar.
 

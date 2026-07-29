@@ -422,6 +422,42 @@ queda parada para siempre. Hay que resolver eso **antes** de volver a encenderlo
 En un aparato cuya razón de ser es recibir un SOS, esto no se embarca encendido. Se compila con
 `-DFT_LIGHT_SLEEP` para retomarlo; el código y la investigación se quedan.
 
+### 📌 PARA MAÑANA: cómo lo hacen Meshtastic y MeshCore
+
+Los dos corren sobre el **mismo SX1262 con RadioLib y el mismo ESP32**, así que se han topado
+con esto sí o sí. Antes de seguir peleándose con `esp_sleep_*` a ciegas, mirar cómo lo
+resuelven ellos. Es la vía más rápida y no cuesta nada.
+
+**La pregunta concreta a responder**: cuando duermen el CPU, ¿cómo consiguen que la
+interrupción de DIO1 siga despertándolos y siga llegando a RadioLib?
+
+**Hipótesis a comprobar primero, y es muy probable que sea la respuesta:** que usen
+`esp_sleep_enable_gpio_wakeup()` + `gpio_wakeup_enable()` en lugar de
+`esp_sleep_enable_ext1_wakeup()`. La diferencia importa:
+
+- **`ext1`** (lo que usé) mueve el pin al **dominio RTC**, y eso es lo que se sospecha que
+  desconecta el pin de la matriz GPIO normal y mata la ISR que registró `setDio1Action()`.
+- **`gpio_wakeup`** despierta desde light sleep **sin sacar el pin del dominio digital**, así
+  que la interrupción normal sigue viva. Es exactamente la herramienta para este caso, y solo
+  funciona en light sleep (no en deep sleep), que es justo lo que queremos.
+
+Si es eso, el arreglo son tres líneas en `hal::sleepBegin()`.
+
+Dónde mirar:
+
+| Proyecto | Archivos |
+|---|---|
+| Meshtastic | `src/sleep.cpp` (`doLightSleep`), `src/PowerFSM.cpp`, `src/mesh/RadioLibInterface.cpp` |
+| MeshCore | `MultiMote/meshcore-cardputer-adv` → `CardputerAdvBoard.h`, y el `MainBoard`/`onIdle` del núcleo |
+
+Dos cosas más que conviene mirar de paso, porque son las que quedan en la lista de autonomía:
+
+1. **Si duty-ciclan el RX del SX1262** (`startReceiveDutyCycleAuto`) y con qué parámetros. Es
+   el punto que aquí se dejó para el final por riesgo de perder paquetes: ver si ellos lo dan
+   por seguro y con qué preámbulo.
+2. **Qué hacen con el GPS.** Si alguno consigue dormir un AT6668/ATGM336H, ahí estará el
+   comando de standby que no aparece en las fuentes públicas del chip.
+
 **Efecto colateral que conviene saber**: con ese firmware dentro, los dos aparatos dejaron de
 responder al flasheo automático (`No serial data received`), porque el USB está apagado la mayor
 parte del tiempo. **No es un ladrillo**: el bootloader del ESP32-S3 está en ROM. Se recupera con
