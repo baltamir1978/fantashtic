@@ -239,6 +239,26 @@
 //  TIEMPOS (ms)
 // =============================================================================
 #define TICK_MS               10
+
+// Tick con la pantalla dormida y la radio ociosa. Lo urgente es un paquete
+// entrante, y a SF11/BW250 el paquete mas corto ocupa mas de 100 ms de aire, asi
+// que sondear cada 50 ms no pierde ninguno.
+//
+// Contrapartida conocida: con la pantalla apagada, una pulsacion mas corta que
+// esto puede no verse, porque el teclado se sondea (isChange() compara contra la
+// ultima lectura). Una pulsacion humana pasa de 100 ms, asi que en la practica no
+// deberia notarse; si se nota, este es el numero que hay que bajar.
+#define TICK_IDLE_MS          50
+
+// Frecuencias del CPU. 240 MHz solo cuando hay que reaccionar rapido.
+//
+// 80 es el SUELO A PROPOSITO: en el ESP32-S3, con el CPU a 80, 160 o 240 MHz el
+// bus APB se queda en 80 MHz, asi que los divisores de SPI (4 MHz de la LoRa,
+// 20 MHz de la microSD) y los baudios del UART del GPS NO cambian. Por debajo de
+// 80 el APB pasa a seguir al CPU y habria que recalcularlos todos.
+#define CPU_MHZ_RAPIDO       240
+#define CPU_MHZ_LENTO         80
+
 #define SCREEN_TIMEOUT_MS     30000
 #define SOS_HOLD_MS           2000   // pulsacion larga del boton
 #define SOS_COUNTDOWN_MS      3000

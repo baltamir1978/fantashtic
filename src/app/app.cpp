@@ -377,8 +377,7 @@ void loop() {
 
   // El volcado a la tarjeta espera a que la radio no este ocupada: el bus SPI
   // esta compartido y una escritura puede tardar decenas de milisegundos.
-  store::tickAlmacenamiento(radio::estado() == radio::Estado::RX &&
-                            radio::radioPendientes() == 0);
+  store::tickAlmacenamiento(radio::radioOciosa());
 }
 
 // --- SOS --------------------------------------------------------------------

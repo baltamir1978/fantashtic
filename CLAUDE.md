@@ -298,5 +298,55 @@ Reglas de dependencia:
   mide en tiempo de ejecución con `D.textWidth()` donde puede pisarse algo (el valor de cada
   fila de ajustes, la columna de detalle de nodos), pero las posiciones verticales son
   aritmética sobre 240×135. Confirmar en el aparato antes de darlas por buenas.
-- No hay light sleep. El SX1262 está en RX continuo. Si la autonomía no llega, la primera
-  optimización es `startReceiveDutyCycleAuto(preambleLength, 8)`.
+### ⭐ Autonomía: el light sleep es lo siguiente y lo más importante
+
+Hecho ya (sin riesgo, no depende de ninguna medida):
+
+- **Reloj adaptativo**: 240 MHz solo con la pantalla encendida o con un SOS en marcha, 80 MHz
+  el resto del tiempo (`hal::cpuRapido()`). **80 es el suelo a propósito**: con el CPU a
+  80/160/240 el bus APB se queda en 80 MHz, así que los divisores de SPI (4 MHz LoRa, 20 MHz
+  SD) y los baudios del UART del GPS no cambian. Por debajo de 80, el APB sigue al CPU y hay
+  que recalcularlos todos.
+- **Tick adaptativo**: 10 ms cuando hace falta reaccionar, `TICK_IDLE_MS` (50) cuando solo se
+  escucha. El cambio de reloj se hace **solo con `radio::radioOciosa()`**: `setCpuFrequencyMhz()`
+  reprograma el PLL y detiene el CPU un instante, y eso en medio de una transacción SPI con el
+  SX1262 no es buena idea.
+- `informeEnergia()` lo saca por consola cada 5 s, porque si no es un cambio invisible.
+
+**Lo que falta, y es la ganancia grande: light sleep.** Investigado ya, para no repetirlo:
+
+- **`CONFIG_PM_ENABLE` NO está activado** en el `sdkconfig` de Arduino-ESP32 6.12.0 para el S3
+  (comprobado en `packages/framework-arduinoespressif32/tools/sdk/esp32s3/sdkconfig`). Por
+  tanto `esp_pm_configure()` no sirve y **el light sleep automático no es una opción** sin
+  recompilar el framework. No perder tiempo por ahí.
+- **Pero `esp_light_sleep_start()` sí está disponible**: vive en `esp_sleep`, no en `esp_pm`.
+  Y encaja con esta arquitectura, que ya es un planificador cooperativo con tick explícito:
+  se sustituye el `delay(tickMs())` por armar despertadores y dormir.
+- Las tres fuentes de despertar necesarias son **GPIO de dominio RTC en el S3** (0-21), así
+  que valen como `ext1`: DIO1 de la radio (**4**), INT del teclado (**11**) y el botón (**0**).
+- `millis()` va sobre `esp_timer`, que sigue contando durante el light sleep, así que **el
+  contador de ciclo de trabajo no se descuadra**. Verificarlo de todos modos.
+- **Trampa segura**: el light sleep tumba el USB-Serial-JTAG y se pierde la consola. Hay que
+  activarlo solo con la pantalla dormida, o detrás de una bandera de compilación, o no habrá
+  forma de depurar nada.
+- `PIN_KB_INT` (GPIO 11) **no se usa hoy**: el teclado se sondea. Para el light sleep hay que
+  cablearlo como fuente de despertar.
+
+Otras dos, por orden, cuando haya una medida real delante:
+
+- **El GPS no se apaga nunca.** `hal::gpsEncender(false)` hace `Serial1.end()`, que cierra el
+  UART pero **deja el ATGM336H alimentado y siguiendo satélites** (~20-25 mA estimados). El
+  ajuste "GPS: apagado" no ahorra batería hoy. No hay pin de alimentación documentado en el
+  Cap, así que la vía sería un comando de standby del AT6668: **hay que confirmar la cadena
+  contra la hoja de comandos del chip, no inventarla.**
+- **El altavoz no se para nunca**: `M5.begin()` lo arranca y nadie llama a `end()`, así que el
+  ES8311 y el NS4150B están alimentados siempre. Medir antes: si son 0,3 mA no merece la pena.
+
+Lo último de la lista, y solo si hace falta, es `startReceiveDutyCycleAuto(preambleLength, 8)`
+para el RX cíclico del SX1262: ahorra unos 3-4 mA y es **el único cambio de la lista que puede
+hacer que se pierda un paquete**. En un aparato donde el SOS tiene que llegar, es el que menos
+gana y el que más arriesga.
+
+**Nada de esto está medido.** Los mA son de hoja de datos y los reguladores de la placa tienen
+su propio consumo en vacío. Con un medidor USB en línea y cuatro escenarios (pantalla apagada
+con GPS y sin él, pantalla encendida, transmitiendo) se sabe en diez minutos cuál manda.

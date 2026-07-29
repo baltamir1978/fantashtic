@@ -73,6 +73,12 @@ bool radioRelevar(const uint8_t* datos, size_t len, float snr);
 
 size_t radioPendientes();
 
+// Escuchando y sin nada en la cola. Dos sitios dependen de esto y conviene que
+// sea la MISMA definicion en los dos: el volcado a la microSD (comparte el bus
+// SPI con el transceptor) y el tick adaptativo del bucle principal, que baja el
+// reloj y espacia los sondeos solo cuando no hay nada en vuelo.
+bool radioOciosa();
+
 // Llamar en cada tick.
 void radioLoop();
 

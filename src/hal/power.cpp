@@ -65,4 +65,19 @@ uint16_t batteryMv()  { refrescar(false); return g_mv; }
 uint8_t  batteryPct() { refrescar(false); return g_pct; }
 bool     batteryLow() { return batteryPct() < BAT_LOW_PCT; }
 
+// --- reloj del CPU -----------------------------------------------------------
+
+// static: esto va despues del namespace anonimo de arriba, y sin el seria un
+// simbolo global exportado desde una unidad de traduccion cualquiera.
+// Se arranca a 240 MHz: es lo que deja el bootloader y lo que quiere setup().
+static bool g_rapido = true;
+
+void cpuRapido(bool rapido) {
+  if (rapido == g_rapido) return;      // reprogramar el PLL no es gratis
+  setCpuFrequencyMhz(rapido ? CPU_MHZ_RAPIDO : CPU_MHZ_LENTO);
+  g_rapido = rapido;
+}
+
+bool cpuEsRapido() { return g_rapido; }
+
 }  // namespace hal

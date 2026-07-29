@@ -314,6 +314,8 @@ bool radioRelevar(const uint8_t* datos, size_t len, float snr) {
 
 size_t radioPendientes() { return g_cola_n; }
 
+bool radioOciosa() { return g_estado == Estado::RX && g_cola_n == 0; }
+
 float    dutyPct()                { return g_duty.utilizacionPct(millis()); }
 uint32_t dutyMinutosParaLiberar() { return g_duty.minutosParaLiberar(millis()); }
 bool     dutyBloqueado()          { return !g_duty.permitido(millis(), false); }

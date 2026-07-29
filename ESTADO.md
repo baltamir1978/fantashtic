@@ -318,6 +318,39 @@ Y de la segunda tanda (preferencias editables, sin probar en el aparato):
 
 ---
 
+## ✅ Reloj y tick adaptativos, verificados en el aparato (29-jul)
+
+Primeras dos medidas de autonomía, y **comprobadas en COM10 con la consola delante**, no
+solo compiladas:
+
+```
+21:46:46  energia: CPU 240 MHz  tick 10 ms  pantalla on   bateria 100% (4203 mV)
+21:46:51  energia: CPU 80 MHz   tick 50 ms  pantalla off  ...  <-- cambio de reloj
+21:48:09  RX de 130C9A3C id 53158001  -28 dBm  SNR 6.5  saltos 0/3 -> entregar y retransmitir
+21:48:17  energia: CPU 80 MHz   tick 10 ms  pantalla off
+21:48:21  RX de 130C92AC id 177B9405  -29 dBm  SNR 7.2  saltos 1/3 -> ack implicito
+```
+
+Lo que eso demuestra, en orden:
+
+1. **El reloj baja a los 30 s exactos** de la última tecla, junto con el tick.
+2. **El GPS sigue con fix a 80 MHz** (NMEA fluyendo, HDOP 1,6). Era el riesgo principal:
+   `setCpuFrequencyMhz()` tiene que recalcular los divisores del UART, y lo hace.
+3. **La radio recibe a 80 MHz** (`RX de 130C9A3C`, de primera mano).
+4. **Y transmite a 80 MHz**: el `ack implicito` es su propio relevo oído de vuelta.
+5. **El tick adaptativo hace lo que dice**: a las 21:48:17 está a 10 ms con la pantalla
+   apagada, porque la radio no estaba ociosa. Pillado en el acto.
+
+Detalle sin explicar, para vigilarlo: el RSSI de esta tanda es **−28/−29 dBm**, y en las
+anteriores era −18/−21. Lo más probable es que los aparatos se hayan movido entre reflasheos
+(han estado con los cables por medio). Bajar el reloj no puede afectar a la potencia de RF,
+así que no parece una regresión — pero conviene volver a mirarlo con los dos nodos quietos.
+
+**No hay ninguna medida de consumo todavía.** Lo verificado es que el mecanismo funciona y no
+rompe nada; cuánto ahorra en mA sigue sin medirse.
+
+---
+
 ## Qué está hecho
 
 | Fase | Contenido | Estado |
@@ -464,7 +497,12 @@ Predicciones, para no perder tiempo:
    Queda sin interfaz el restablecimiento de fábrica, y preset/potencia/saltos.
 3. ~~`pantallaNodos()` dibuja 8 filas pero permite seleccionar 16. Falta scroll.~~
    **Hecho**: ventana deslizante compartida con ajustes, con contador en el pie.
-4. Medir consumo real y decidir si hace falta recepción cíclica del SX1262.
+4. **Autonomía.** Hechos ya el reloj adaptativo (80/240 MHz) y el tick adaptativo (10/50 ms).
+   **Lo siguiente y lo más importante es el light sleep**, y ya está investigado: ver el
+   bloque "⭐ Autonomía" de `CLAUDE.md`. Resumen: `CONFIG_PM_ENABLE` no está activado en el
+   Arduino-ESP32 6.12.0, así que el light sleep automático no existe, pero
+   `esp_light_sleep_start()` sí, y encaja con el tick explícito de este bucle. Luego el GPS
+   (hoy no se apaga de verdad) y el altavoz. Y antes de nada, **medir con un medidor USB**.
 5. Actualizar `Memoria_tecnica_Fantashtic.docx` con los resultados de campo. Sigue diciendo
    "fases 0 y 1 completadas", y ya está todo escrito y probado en dos nodos.
 6. **Subir las iteraciones de PBKDF2.** 20 000 son pocas para una frase corta. Ojo: cambiarlo

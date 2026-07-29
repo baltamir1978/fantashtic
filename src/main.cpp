@@ -113,6 +113,50 @@ void atenderBoton() {
   }
 }
 
+// --- autonomia ---------------------------------------------------------------
+//
+// Dos medidas, las dos sin riesgo funcional. La grande que falta es el LIGHT
+// SLEEP, y no cabe aqui: ver el bloque de deuda en CLAUDE.md.
+//
+// Hace falta reaccionar rapido en dos situaciones y solo en dos: alguien esta
+// mirando la pantalla, o hay un SOS en marcha. El resto del tiempo el aparato
+// solo escucha, y para eso 80 MHz y un tick de 50 ms sobran.
+bool haciendoFalta() {
+  return ui::pantallaEncendida() || app::sosEstado() != app::Sos::INACTIVO;
+}
+
+void ajustarReloj() {
+  // Solo con la radio ociosa: setCpuFrequencyMhz() reprograma el PLL y detiene
+  // el CPU un instante, y eso en medio de una transaccion SPI con el SX1262 no
+  // es buena idea. Si la radio esta ocupada, se ajusta en el tick siguiente.
+  if (!radio::radioOciosa()) return;
+  hal::cpuRapido(haciendoFalta());
+}
+
+uint32_t tickMs() {
+  if (haciendoFalta())        return TICK_MS;
+  if (!radio::radioOciosa())  return TICK_MS;   // hay algo en vuelo
+  return TICK_IDLE_MS;
+}
+
+// Informe periodico de energia. Sin esto, bajar el reloj es un cambio invisible
+// que hay que creerse: asi se ve en la consola pasar a 80 MHz y a 50 ms de tick
+// cuando la pantalla se duerme, y volver a 240/10 al tocar una tecla.
+void informeEnergia() {
+  static uint32_t ultimo = 0;
+  static uint32_t mhz_anterior = 0;
+  if (millis() - ultimo < 5000) return;
+  ultimo = millis();
+
+  const uint32_t mhz = getCpuFrequencyMhz();
+  Serial.printf("energia: CPU %lu MHz  tick %lu ms  pantalla %s  bateria %u%% (%u mV)%s\n",
+                (unsigned long)mhz, (unsigned long)tickMs(),
+                ui::pantallaEncendida() ? "on" : "off",
+                (unsigned)hal::batteryPct(), (unsigned)hal::batteryMv(),
+                mhz != mhz_anterior && mhz_anterior ? "   <-- cambio de reloj" : "");
+  mhz_anterior = mhz;
+}
+
 // Informe periodico del GPS por consola.
 //
 // En interior NO va a haber fix, pero los bytes NMEA deben llegar igual: es lo
@@ -284,6 +328,7 @@ void loop() {
   atenderBoton();
   avisosDeEstado();
   informeGps();
+  informeEnergia();
 
   hal::Evento ev;
   if (hal::keysPoll(&ev)) {
@@ -291,5 +336,9 @@ void loop() {
   }
 
   ui::loop();
-  delay(TICK_MS);
+
+  // Al final, cuando ui::loop() ya ha podido dormir la pantalla: asi el reloj y
+  // el tick bajan en el mismo ciclo en que se apaga, no uno despues.
+  ajustarReloj();
+  delay(tickMs());
 }
