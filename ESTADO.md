@@ -400,6 +400,35 @@ De paso se añadieron dos diagnósticos de consola que hicieron falta para esto 
 
 ---
 
+## ⚠ El light sleep deja el nodo SORDO: desactivado (29-jul)
+
+Se implementó (`hal::dormirHasta()`, sustituyendo el `delay()` del tick) y **se desactivó al
+medirlo**. Con él activo, el nodo deja de recibir y de transmitir en cuanto la pantalla se
+duerme. Dos evidencias independientes:
+
+- **COM11, sin consola conectada, se quedó mudo** a los 30 s de arrancar y no contestó al
+  NODEINFO de COM10. `nodos: total 0` durante todo el minuto siguiente.
+- **COM10 dejó de imprimir** en el instante exacto de su primer sueño (22:45:13.174).
+
+Lo segundo por sí solo no prueba nada —el light sleep tumba el USB-Serial-JTAG y perder la
+consola es lo esperado y estaba anticipado—. Lo que no se explica con eso es **el silencio de
+radio del otro nodo**, que no tenía monitor.
+
+**Hipótesis principal, sin confirmar**: `esp_sleep_enable_ext1_wakeup()` pasa el GPIO 4 (DIO1)
+al dominio RTC y eso rompe la interrupción GPIO normal que RadioLib registró con
+`setDio1Action()`. Sin esa ISR, `g_irq` nunca se levanta y la máquina de estados de la radio se
+queda parada para siempre. Hay que resolver eso **antes** de volver a encenderlo.
+
+En un aparato cuya razón de ser es recibir un SOS, esto no se embarca encendido. Se compila con
+`-DFT_LIGHT_SLEEP` para retomarlo; el código y la investigación se quedan.
+
+**Efecto colateral que conviene saber**: con ese firmware dentro, los dos aparatos dejaron de
+responder al flasheo automático (`No serial data received`), porque el USB está apagado la mayor
+parte del tiempo. **No es un ladrillo**: el bootloader del ESP32-S3 está en ROM. Se recupera con
+interruptor **OFF** → mantener **G0** → dar corriente → soltar. Verificado: los dos volvieron.
+
+---
+
 ## Qué está hecho
 
 | Fase | Contenido | Estado |

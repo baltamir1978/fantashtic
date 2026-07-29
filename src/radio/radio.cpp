@@ -47,7 +47,25 @@ uint32_t g_airtime_ms = 0;
 // deshabilitada. Y solo puede levantar una bandera, nunca tocar el SPI.
 void IRAM_ATTR onDio1() { g_irq = true; }
 
-float slotTimeMs() { return mesh::slotTimeMs(PRESET_LONG_FAST_SF, PRESET_LONG_FAST_BW); }
+// Parametros PHY en vigor. Antes eran las constantes del preset por defecto
+// puestas a mano en cada sitio, y config().preset y config().tx_dbm eran campos
+// MUERTOS que nadie leia. Ahora salen de la configuracion, y de aqui salen a su
+// vez el tiempo en aire y el slot: si no, el contador de ciclo de trabajo
+// mentiria en cuanto se cambiara el preset.
+uint8_t g_sf  = PRESET_LONG_FAST_SF;
+float   g_bw  = PRESET_LONG_FAST_BW;
+uint8_t g_cr  = PRESET_LONG_FAST_CR;
+int8_t  g_dbm = RF_TX_POWER_DBM;
+
+void parametrosDePreset(uint8_t preset, uint8_t* sf, float* bw, uint8_t* cr) {
+  switch (preset) {
+    case 1: *sf = PRESET_LONG_SLOW_SF;   *bw = PRESET_LONG_SLOW_BW;   *cr = PRESET_LONG_SLOW_CR;   break;
+    case 2: *sf = PRESET_MEDIUM_FAST_SF; *bw = PRESET_MEDIUM_FAST_BW; *cr = PRESET_MEDIUM_FAST_CR; break;
+    default: *sf = PRESET_LONG_FAST_SF;  *bw = PRESET_LONG_FAST_BW;   *cr = PRESET_LONG_FAST_CR;   break;
+  }
+}
+
+float slotTimeMs() { return mesh::slotTimeMs(g_sf, g_bw); }
 
 // Ocupacion del canal, en tanto por ciento del presupuesto de ciclo de
 // trabajo. Es la senal que ensancha la ventana de contencion cuando el aire
@@ -188,7 +206,11 @@ void manejarIrq() {
 
 // =============================================================================
 
-Init radioBegin(bool* tcxo_ok) {
+Init radioBegin(uint8_t preset, int8_t dbm, bool* tcxo_ok) {
+  if (preset >= PRESET_COUNT) preset = 0;
+  if (dbm < RF_TX_POWER_MIN)  dbm = RF_TX_POWER_MIN;
+  if (dbm > RF_TX_POWER_MAX)  dbm = RF_TX_POWER_MAX;
+
   if (tcxo_ok) *tcxo_ok = true;
 
   // El conmutador de antena externo es OPCIONAL, no un requisito.
@@ -218,8 +240,12 @@ Init radioBegin(bool* tcxo_ok) {
 
   hal::spiBegin();   // obligatorio: con este constructor RadioLib no llama a SPI.begin()
 
-  int16_t st = g_radio.begin(RF_FREQ_MHZ, PRESET_LONG_FAST_BW, PRESET_LONG_FAST_SF,
-                             PRESET_LONG_FAST_CR, RF_SYNC_WORD, RF_TX_POWER_DBM,
+  // Preset y potencia vienen por parametro, no leidos de store: asi radio/ no
+  // depende de la configuracion y se queda con una sola responsabilidad.
+  parametrosDePreset(preset, &g_sf, &g_bw, &g_cr);
+  g_dbm = dbm;
+
+  int16_t st = g_radio.begin(RF_FREQ_MHZ, g_bw, g_sf, g_cr, RF_SYNC_WORD, g_dbm,
                              RF_PREAMBLE, LORA_TCXO_V);
 
   // Placa con oscilador de cristal en vez de TCXO. Los codigos son -706 y -707;
@@ -229,8 +255,7 @@ Init radioBegin(bool* tcxo_ok) {
     Serial.println("radio: sin TCXO, reintentando con XTAL");
     if (tcxo_ok) *tcxo_ok = false;
     g_radio.XTAL = true;
-    st = g_radio.begin(RF_FREQ_MHZ, PRESET_LONG_FAST_BW, PRESET_LONG_FAST_SF,
-                       PRESET_LONG_FAST_CR, RF_SYNC_WORD, RF_TX_POWER_DBM,
+    st = g_radio.begin(RF_FREQ_MHZ, g_bw, g_sf, g_cr, RF_SYNC_WORD, g_dbm,
                        RF_PREAMBLE, 0.0f);
   }
   if (st != RADIOLIB_ERR_NONE) {
@@ -252,9 +277,34 @@ Init radioBegin(bool* tcxo_ok) {
   aRecepcion();
 
   Serial.printf("radio: %.3f MHz  SF%d  BW%.0f  CR4/%d  %d dBm  slot %.1f ms\n",
-                RF_FREQ_MHZ, PRESET_LONG_FAST_SF, PRESET_LONG_FAST_BW,
-                PRESET_LONG_FAST_CR, RF_TX_POWER_DBM, slotTimeMs());
+                RF_FREQ_MHZ, g_sf, g_bw, g_cr, g_dbm, slotTimeMs());
   return Init::OK;
+}
+
+bool radioAplicarPreset(uint8_t preset, int8_t dbm) {
+  if (preset >= PRESET_COUNT) return false;
+  if (dbm < RF_TX_POWER_MIN || dbm > RF_TX_POWER_MAX) return false;
+  if (g_estado == Estado::SIN_INICIAR || g_estado == Estado::ERROR) return false;
+
+  // Solo con la radio ociosa: reprogramar SF/BW en medio de una transmision
+  // dejaria el paquete a medias y el contador de aire descuadrado.
+  if (!radioOciosa()) return false;
+
+  parametrosDePreset(preset, &g_sf, &g_bw, &g_cr);
+  g_dbm = dbm;
+
+  // El orden importa poco, pero hay que volver a RX al final: cambiar la
+  // modulacion saca al chip de recepcion sin avisar.
+  bool ok = g_radio.setSpreadingFactor(g_sf) == RADIOLIB_ERR_NONE;
+  ok = ok && g_radio.setBandwidth(g_bw)      == RADIOLIB_ERR_NONE;
+  ok = ok && g_radio.setCodingRate(g_cr)     == RADIOLIB_ERR_NONE;
+  ok = ok && g_radio.setOutputPower(g_dbm)   == RADIOLIB_ERR_NONE;
+  aRecepcion();
+
+  Serial.printf("radio: preset %u -> SF%d BW%.0f CR4/%d  %d dBm  slot %.1f ms  %s\n",
+                (unsigned)preset, g_sf, g_bw, g_cr, g_dbm, slotTimeMs(),
+                ok ? "OK" : "FALLO");
+  return ok;
 }
 
 Estado estado() { return g_estado; }
@@ -375,8 +425,8 @@ uint32_t tiempoEnAireMs(size_t len) {
 void reiniciarContadores() { g_n_tx = g_n_rx = g_n_crc = 0; g_airtime_ms = 0; }
 
 float   freqMhz()      { return RF_FREQ_MHZ; }
-uint8_t sf()           { return PRESET_LONG_FAST_SF; }
-float   bwKhz()        { return PRESET_LONG_FAST_BW; }
-int8_t  potenciaDbm()  { return RF_TX_POWER_DBM; }
+uint8_t sf()           { return g_sf; }
+float   bwKhz()        { return g_bw; }
+int8_t  potenciaDbm()  { return g_dbm; }
 
 }  // namespace radio

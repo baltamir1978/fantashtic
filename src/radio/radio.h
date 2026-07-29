@@ -46,7 +46,9 @@ struct Paquete {
 
 // Arranca la radio. Requiere que hal::antennaBegin() haya devuelto OK.
 // tcxo_ok queda a false si hubo que reintentar sin TCXO.
-Init radioBegin(bool* tcxo_ok = nullptr);
+// 'preset' es el indice 0..PRESET_COUNT-1 y 'dbm' la potencia; vienen por
+// parametro y no leidos de store para que radio/ no dependa de la configuracion.
+Init radioBegin(uint8_t preset, int8_t dbm, bool* tcxo_ok = nullptr);
 
 Estado estado();
 const char* estadoNombre(Estado e);
@@ -107,5 +109,14 @@ float freqMhz();
 uint8_t sf();
 float bwKhz();
 int8_t potenciaDbm();
+
+// Reprograma SF/BW/CR y potencia en caliente, desde config().preset y
+// config().tx_dbm. Devuelve false si el preset o la potencia estan fuera de
+// rango, si la radio no esta lista, o si NO esta ociosa: cambiar la modulacion
+// en medio de una transmision dejaria el paquete a medias.
+//
+// OJO: dos nodos con presets distintos NO se oyen. Esto se cambia en todos o en
+// ninguno, y por eso la interfaz lo pone detras de una confirmacion.
+bool radioAplicarPreset(uint8_t preset, int8_t dbm);
 
 }  // namespace radio

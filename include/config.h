@@ -150,10 +150,22 @@
 #define RF_TX_POWER_MIN    2
 #define RF_TX_POWER_MAX   22
 
-// Presets (SF, BW kHz, CR). LONG_FAST es el defecto.
+// Presets (SF, BW kHz, CR). LONG_FAST es el defecto y el unico probado en el
+// aire. Los valores de SF/BW salen de RadioInterface.cpp de meshtastic/firmware.
+//
+// CAMBIAR EL PRESET HAY QUE HACERLO EN TODOS LOS NODOS: dos nodos con presets
+// distintos no se oyen en absoluto. Por eso va detras de confirmacion.
 #define PRESET_LONG_FAST_SF       11
 #define PRESET_LONG_FAST_BW       250.0f
 #define PRESET_LONG_FAST_CR        5
+
+#define PRESET_COUNT               3
+#define PRESET_LONG_SLOW_SF       12      // maximo alcance, la mitad de velocidad
+#define PRESET_LONG_SLOW_BW       125.0f
+#define PRESET_LONG_SLOW_CR         8
+#define PRESET_MEDIUM_FAST_SF      9      // mas rapido, menos alcance
+#define PRESET_MEDIUM_FAST_BW     250.0f
+#define PRESET_MEDIUM_FAST_CR       5
 
 // Region EU_868 - RadioInterface.cpp: RDEF(EU_868, 869.4, 869.65, 10, 0, 27, ...)
 #define REGION_FREQ_START 869.4f
@@ -260,7 +272,7 @@
 #define CPU_MHZ_LENTO         80
 
 #define SCREEN_TIMEOUT_MS     30000
-#define SOS_HOLD_MS           2000   // pulsacion larga del boton
+#define SOS_HOLD_MS           2000   // mantener el boton G0, o ENTER+ESC a la vez
 #define SOS_COUNTDOWN_MS      3000
 #define SOS_BURST_INTERVAL_MS 30000  // 3 envios separados 30 s
 #define SOS_BURST_COUNT        3

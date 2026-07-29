@@ -88,7 +88,10 @@ void pantallaFallo() {
 // pantalla se queda muerta, que es justo la ruta facil a un estado roto que la
 // restriccion nº 8 prohibe. Hace falta una alternativa desde el teclado.
 void atenderBoton() {
-  if (M5Cardputer.BtnA.isPressed()) {
+  // Dos gestos, la misma regla: mantener 2 segundos. El teclado (ENTER+ESC) es
+  // la via principal; G0 se queda como secundaria porque es el boton del modo
+  // descarga y no es un buen disparador de emergencia (ver deuda en CLAUDE.md).
+  if (M5Cardputer.BtnA.isPressed() || hal::keysSosCombo()) {
     if (!g_boton_desde) g_boton_desde = millis();
     else if (millis() - g_boton_desde >= SOS_HOLD_MS &&
              app::sosEstado() == app::Sos::INACTIVO) {
@@ -123,6 +126,19 @@ void atenderBoton() {
 // solo escucha, y para eso 80 MHz y un tick de 50 ms sobran.
 bool haciendoFalta() {
   return ui::pantallaEncendida() || app::sosEstado() != app::Sos::INACTIVO;
+}
+
+// Ritmo del GPS: 1 Hz cuando alguien mira o hay un SOS, 0,2 Hz el resto. Baja el
+// caudal NMEA de ~820 a ~40 B/s. NO apaga el receptor -- eso sigue pendiente y
+// esta bloqueado por falta del comando de standby del AT6668, ver CLAUDE.md.
+void ajustarRitmoGps() {
+  static int8_t ultimo = -1;                 // -1 = sin fijar todavia
+  if (!store::config().gps_activo) { ultimo = -1; return; }
+
+  const int8_t quiere = haciendoFalta() ? 1 : 0;
+  if (quiere == ultimo) return;              // no repetir el comando cada tick
+  hal::gpsRitmo(quiere ? 1000 : 5000);
+  ultimo = quiere;
 }
 
 void ajustarReloj() {
@@ -269,6 +285,7 @@ void setup() {
   randomSeed(esp_random());
 
   hal::powerBegin();
+  hal::sleepBegin();      // arma las fuentes de despertar del light sleep
   hal::soundBegin();
   hal::ledBegin();
   hal::keysBegin();
@@ -291,7 +308,7 @@ void setup() {
   hal::i2cDiagnostico();   // los dos buses: el Cap podria no estar en el interno
 
   g_ant  = hal::antennaBegin();
-  g_init = radio::radioBegin();
+  g_init = radio::radioBegin(store::config().preset, (int8_t)store::config().tx_dbm);
   g_operativo = (g_init == radio::Init::OK);
 
   if (store::config().gps_activo) hal::gpsBegin();
@@ -353,8 +370,11 @@ void loop() {
   informeEnergia();
   informeNodos();
 
+  // Mientras ENTER+ESC esten pulsados a la vez NO se procesan teclas: ese es el
+  // gesto del SOS, y dejarlo pasar haria que el ENTER confirmase la cuenta atras
+  // en el mismo instante de armarla, sin ventana para cancelar.
   hal::Evento ev;
-  if (hal::keysPoll(&ev)) {
+  if (!hal::keysSosCombo() && hal::keysPoll(&ev)) {
     if (ui::tecla(ev)) ui::pintar();
   }
 
@@ -362,6 +382,16 @@ void loop() {
 
   // Al final, cuando ui::loop() ya ha podido dormir la pantalla: asi el reloj y
   // el tick bajan en el mismo ciclo en que se apaga, no uno despues.
+  ajustarRitmoGps();
   ajustarReloj();
-  delay(tickMs());
+
+  // Light sleep SOLO con la pantalla apagada y la radio ociosa. Con la pantalla
+  // encendida se usa delay(), por dos razones: es cuando alguien esta mirando y
+  // la latencia se nota, y es cuando se esta depurando -- el light sleep tumba el
+  // USB-Serial-JTAG y la consola se pierde.
+  const uint32_t t = tickMs();
+  if (!haciendoFalta() && radio::radioOciosa() && hal::sleepDisponible())
+    hal::dormirHasta(t);
+  else
+    delay(t);
 }

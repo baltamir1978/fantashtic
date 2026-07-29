@@ -36,4 +36,32 @@ bool batteryLow();
 void cpuRapido(bool rapido);
 bool cpuEsRapido();
 
+// --- light sleep -------------------------------------------------------------
+// Duerme el CPU hasta 'ms' o hasta que algo lo despierte. Es la medida de
+// autonomia mas grande que queda: sustituye al delay() del tick, que solo cede a
+// la tarea idle y deja el reloj corriendo.
+//
+// Fuentes de despertar, las tres GPIO de dominio RTC en el S3 (0-21):
+//   DIO1 de la radio (4)   paquete recibido o transmision terminada
+//   INT del teclado  (11)  el TCA8418 avisa de una pulsacion
+//   boton G0         (0)   SOS
+// Mas el temporizador, que es el que marca el tick normal.
+//
+// millis() va sobre esp_timer, que sigue contando durmiendo: el contador de
+// ciclo de trabajo NO se descuadra.
+//
+// ⚠ DESACTIVADO POR DEFECTO. Se compila con -DFT_LIGHT_SLEEP para retomarlo.
+//
+// Medido el 29-jul-2026: con el light sleep activo el nodo se queda SORDO Y MUDO
+// en cuanto la pantalla se duerme. La hipotesis principal es que
+// esp_sleep_enable_ext1_wakeup() pasa el GPIO 4 (DIO1) al dominio RTC y rompe la
+// interrupcion que RadioLib registro con setDio1Action(), dejando la maquina de
+// estados de la radio parada. Hay que resolver eso antes de encenderlo.
+//
+// Ademas, el light sleep tumba el USB-Serial-JTAG y se pierde la consola; por eso
+// el bucle solo lo usa con la pantalla ya dormida.
+void sleepBegin();
+bool sleepDisponible();
+void dormirHasta(uint32_t ms);
+
 }  // namespace hal

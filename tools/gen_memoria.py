@@ -81,7 +81,8 @@ p('sin infraestructura de red', size=12, align=WD_ALIGN_PARAGRAPH.CENTER, space_
 for _ in range(6): doc.add_paragraph()
 p('Autor:  Bruno Altamirano', align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
 p('Versión 1.0  ·  29 de julio de 2026', align=WD_ALIGN_PARAGRAPH.CENTER, color=GRIS, space_after=2)
-p('Estado: en desarrollo (fases 0 y 1 completadas)', align=WD_ALIGN_PARAGRAPH.CENTER, color=GRIS)
+p('Estado: operativo en dos unidades; pendientes las pruebas de campo',
+  align=WD_ALIGN_PARAGRAPH.CENTER, color=GRIS)
 doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
 
 # ============================ INDICE ============================
@@ -383,20 +384,25 @@ p('Procede señalar que la ampliación a tres nodos no es opcional desde el punt
 h('9. Planificación y estado', 1)
 tabla(['Fase', 'Contenido', 'Estado'],
       [['0', 'Estructura del proyecto y configuración de compilación', 'Completada'],
-       ['1', 'Capa de abstracción de hardware', 'Completada, pendiente de verificación'],
-       ['2', 'Puesta en marcha de la radio', 'Pendiente'],
-       ['3', 'Implementación del protocolo', 'Pendiente'],
-       ['4', 'Encaminamiento por inundación', 'Pendiente'],
-       ['5', 'Control del ciclo de trabajo', 'Pendiente'],
-       ['6', 'Conversación e interfaz', 'Pendiente'],
-       ['7', 'Gestión de nodos', 'Pendiente'],
-       ['8', 'Posicionamiento y brújula', 'Pendiente'],
-       ['9', 'Función de emergencia', 'Pendiente'],
-       ['10', 'Configuración en el dispositivo', 'Pendiente'],
-       ['11', 'Acabado y documentación', 'Pendiente']],
+       ['1', 'Capa de abstracción de hardware', 'Verificada en hardware'],
+       ['2', 'Puesta en marcha de la radio', 'Verificada en hardware'],
+       ['3', 'Implementación del protocolo', 'Verificada: vectores y enlace real'],
+       ['4', 'Encaminamiento por inundación', 'Verificado entre dos nodos'],
+       ['5', 'Control del ciclo de trabajo', 'Completada, 64 pruebas automáticas'],
+       ['6', 'Conversación e interfaz', 'Completada'],
+       ['7', 'Gestión de nodos', 'Verificada en hardware'],
+       ['8', 'Posicionamiento y brújula', 'GPS verificado; brújula sin verificar'],
+       ['9', 'Función de emergencia', 'Completada, sin verificar de extremo a extremo'],
+       ['10', 'Configuración en el dispositivo', 'Completada'],
+       ['11', 'Acabado y documentación', 'Pendiente de las pruebas de campo']],
       [1.8, 9.2, 5.0])
-p('Cada fase debe compilarse, cargarse en el dispositivo y verificarse en hardware real antes de '
-  'iniciar la siguiente. La fase 3 constituye el hito crítico del proyecto.')
+p('Se dispone de dos unidades operativas que intercambian mensajes cifrados por radio, con una '
+  'potencia recibida de −18 a −29 dBm a corta distancia y una relación señal a ruido de 6 a 7 dB. '
+  'El protocolo se ha validado por dos vías independientes: contraste con vectores de prueba '
+  'generados con una implementación de referencia, y funcionamiento real entre dos equipos.')
+p('Queda pendiente la verificación de la retransmisión, que requiere un tercer equipo y constituye '
+  'la única función del sistema todavía sin comprobar, así como las pruebas de exterior de '
+  'posicionamiento y de la función de emergencia.')
 
 # ============================ 10 VERIFICACION ============================
 h('10. Verificación y validación', 1)
@@ -461,9 +467,14 @@ p('El estudio de cobertura establece expectativas realistas: varios kilómetros 
   'por encima de la potencia radiada.')
 p('El coste de completar la red asciende a unos 116 dólares, y la ampliación al tercer nodo resulta '
   'imprescindible para poder validar la función de retransmisión.')
-p('Se encuentran completadas las fases 0 y 1. El siguiente hito es la puesta en marcha de la radio '
-  'y, a continuación, la implementación del protocolo, que constituye el punto de decisión del '
-  'proyecto.')
+p('El firmware se encuentra operativo en dos unidades, que intercambian mensajes cifrados por radio '
+  'con encaminamiento y confirmación implícita de entrega. Los siguientes hitos son la verificación '
+  'de la retransmisión con un tercer equipo, las pruebas de exterior y la medida del consumo real, '
+  'de la que depende la estimación de autonomía.')
+p('Sobre la autonomía: se han incorporado el escalado de frecuencia del procesador y el espaciado '
+  'adaptativo del ciclo de ejecución, ambos verificados en el equipo. La medida de mayor impacto, la '
+  'suspensión ligera del procesador, se implementó y se desactivó al comprobarse que dejaba el nodo '
+  'sin recepción de radio; queda documentada y pendiente de resolver.')
 
 # ============================ 13 REFERENCIAS ============================
 h('13. Referencias', 1)
@@ -494,6 +505,10 @@ for sec in doc.sections:
     field(par, 'PAGE')
     for r in par.runs: r.font.size = Pt(9); r.font.color.rgb = GRIS
 
-out = '/sessions/tender-charming-galileo/mnt/outputs/Memoria_tecnica_Fantashtic.docx'
+# Junto al resto de la documentacion, y relativo al repositorio: la ruta absoluta
+# que habia aqui apuntaba a una sesion de trabajo que ya no existe.
+import os
+raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+out = os.path.join(raiz, 'docs', 'Memoria_tecnica_Fantashtic.docx')
 doc.save(out)
 print('OK ->', out)

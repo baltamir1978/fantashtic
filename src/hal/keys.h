@@ -44,6 +44,16 @@ void keysBegin();
 // Solo reporta pulsaciones, no repeticiones ni sueltas.
 bool keysPoll(Evento* ev);
 
+// true mientras ENTER y ESC esten pulsados A LA VEZ: es el gesto del SOS por
+// teclado. NO pasa por keysPoll(), que devuelve un solo evento y se queda con
+// ENTER, asi que por esa via el combo seria invisible.
+//
+// Se eligio ENTER+ESC porque estan en esquinas opuestas: dificil de pulsar por
+// accidente, facil a proposito y con prisa. Mientras esten pulsados, el bucle
+// principal NO procesa teclas, o el ENTER confirmaria la cuenta atras en el
+// mismo instante de armarla y no habria ventana para cancelar.
+bool keysSosCombo();
+
 // Nombre legible de una tecla, para depurar.
 const char* keysNombre(Tecla t);
 

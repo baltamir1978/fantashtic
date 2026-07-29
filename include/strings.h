@@ -91,6 +91,32 @@
 #define S_CONFIRMA        "ENTER = si     ESC = no"
 #define S_GUARDADO        "Guardado"
 
+// Avisos de las filas delicadas, una linea por renglon (drawString no parte \n).
+#define S_AVISO_PRESET_1  "Cambia la velocidad de radio."
+#define S_AVISO_PRESET_2  "Hay que ponerlo IGUAL en"
+#define S_AVISO_PRESET_3  "todos los aparatos o dejaran"
+#define S_AVISO_PRESET_4  "de oirse."
+#define S_AVISO_FABRICA_1 "Borra el nombre, la clave y"
+#define S_AVISO_FABRICA_2 "los ajustes de este aparato."
+#define S_AVISO_FABRICA_3 "Habra que repetir el"
+#define S_AVISO_FABRICA_4 "asistente de arranque."
+#define S_AVISO_SALTOS_1  "Mas saltos llegan mas lejos"
+#define S_AVISO_SALTOS_2  "pero cargan mas el aire."
+#define S_AVISO_SALTOS_3  "Con 3 sobra para 4 nodos."
+#define S_AVISO_SALTOS_4  ""
+#define S_AVISO_POTENCIA_1 "Menos potencia gasta menos"
+#define S_AVISO_POTENCIA_2 "bateria y llega menos lejos."
+#define S_AVISO_POTENCIA_3 "22 dBm es el maximo legal"
+#define S_AVISO_POTENCIA_4 "con la antena incluida."
+
+// Nombres de los presets, en lo que le importa al usuario y no en SF/BW.
+#define S_PRESET_0        "Normal"
+#define S_PRESET_1        "Maximo alcance"
+#define S_PRESET_2        "Rapido"
+
+// SOS por teclado
+#define S_SOS_TECLAS      "ENTER+ESC 2s = SOS"
+
 // --- informacion -------------------------------------------------------------
 #define S_INFO_NODO       "Nodo"
 #define S_INFO_CANAL      "Canal"

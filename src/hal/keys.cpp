@@ -83,6 +83,19 @@ bool keysPoll(Evento* ev) {
   return true;
 }
 
+bool keysSosCombo() {
+  if (!M5Cardputer.Keyboard.isPressed()) return false;
+  const auto& st = M5Cardputer.Keyboard.keysState();
+  if (!st.enter) return false;
+
+  // ESC se sintetiza de '`'. Hay que recorrer TODA la lista de teclas pulsadas:
+  // keysPoll() devuelve un solo evento y se queda con ENTER, asi que por esa via
+  // el combo es invisible.
+  for (const char c : st.word)
+    if (c == '`') return true;
+  return false;
+}
+
 const char* keysNombre(Tecla t) {
   switch (t) {
     case Tecla::CARACTER:   return "caracter";

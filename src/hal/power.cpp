@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <M5Unified.h>
+#include <esp_sleep.h>
 
 #include "config.h"
 
@@ -79,5 +80,66 @@ void cpuRapido(bool rapido) {
 }
 
 bool cpuEsRapido() { return g_rapido; }
+
+// --- light sleep -------------------------------------------------------------
+
+static bool g_sleep_ok = false;
+
+void sleepBegin() {
+#ifndef FT_LIGHT_SLEEP
+  // DESACTIVADO A PROPOSITO. Ver el bloque de autonomia en CLAUDE.md.
+  //
+  // Medido el 29-jul-2026: con el light sleep activo, el nodo se queda SORDO Y
+  // MUDO en cuanto la pantalla se duerme. Dos evidencias independientes:
+  //   - COM11, sin consola conectada, dejo de transmitir a los 30 s de arrancar
+  //     y no contesto al NODEINFO de COM10.
+  //   - COM10 dejo de imprimir en el instante exacto del primer sueño.
+  // (Lo segundo por si solo no prueba nada: el light sleep tumba el
+  //  USB-Serial-JTAG y perder la consola es lo esperado. Lo que no se explica
+  //  con eso es el silencio de radio del otro nodo.)
+  //
+  // Hipotesis principal, sin confirmar: esp_sleep_enable_ext1_wakeup() pasa el
+  // GPIO 4 (DIO1) al dominio RTC y eso rompe la interrupcion GPIO normal que
+  // RadioLib registro con setDio1Action(). Sin esa ISR, g_irq nunca se levanta y
+  // la maquina de estados de la radio se queda parada para siempre.
+  //
+  // En un aparato cuya razon de ser es recibir un SOS, esto no se embarca
+  // encendido. Se compila con -DFT_LIGHT_SLEEP para retomarlo, y hay que
+  // resolver la ISR de DIO1 antes de darlo por bueno.
+  g_sleep_ok = false;
+  return;
+#else
+  // Las tres lineas que tienen que poder despertarnos. Se arman una sola vez:
+  // ext1 es una mascara de pines, no hay que rearmarla en cada dormida.
+  //
+  // DIO1 y el INT del teclado despiertan en ALTO; el boton G0 lleva pull-up y se
+  // va a BAJO al pulsarlo, asi que ese NO puede ir en la misma mascara ext1 (un
+  // solo nivel para todos los pines). El boton se detecta en el tick siguiente,
+  // que con 50 ms de tope y 2 s de pulsacion larga llega de sobra.
+  const uint64_t mascara = (1ULL << PIN_LORA_DIO1) | (1ULL << PIN_KB_INT);
+  const esp_err_t e = esp_sleep_enable_ext1_wakeup(mascara, ESP_EXT1_WAKEUP_ANY_HIGH);
+  if (e != ESP_OK) {
+    Serial.printf("energia: ext1 fallo (%d), sin light sleep\n", (int)e);
+    g_sleep_ok = false;
+    return;
+  }
+  g_sleep_ok = true;
+  Serial.printf("energia: light sleep listo (despiertan DIO1 %d, teclado %d)\n",
+                PIN_LORA_DIO1, PIN_KB_INT);
+#endif
+}
+
+bool sleepDisponible() { return g_sleep_ok; }
+
+void dormirHasta(uint32_t ms) {
+  if (!g_sleep_ok || ms == 0) { delay(ms); return; }
+
+  // Vaciar la consola ANTES de dormir: el USB-Serial-JTAG se apaga con el CPU y
+  // lo que quede en el buffer se perderia a medias.
+  Serial.flush();
+
+  esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000ULL);
+  esp_light_sleep_start();
+}
 
 }  // namespace hal

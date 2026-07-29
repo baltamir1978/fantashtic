@@ -62,10 +62,35 @@ int  g_paso_asistente = 0;   // 0 nombre, 1 frase, 2 derivando
 // se come todas las teclas y se pinta por encima de la pantalla de ajustes.
 enum class Campo : uint8_t { NINGUNO = 0, NOMBRE, CORTO, FRASE };
 Campo g_campo       = Campo::NINGUNO;
-bool  g_confirmando = false;   // solo la frase: es destructiva
 bool  g_derivando   = false;   // PBKDF2 bloquea ~0,5 s y hay que avisar antes
 char  g_edit[65]    = {};      // la frase admite 64 bytes; los nombres, menos
 int   g_edit_n      = 0;
+
+// Accion delicada esperando confirmacion. La restriccion nº 8 pide que a ningun
+// estado roto se llegue de un solo golpe, y estas cinco filas pueden dejar el
+// aparato incomunicado o sin configuracion.
+enum class Confirmar : uint8_t {
+  NADA = 0, FRASE, PRESET, POTENCIA, SALTOS, FABRICA
+};
+Confirmar g_confirmar = Confirmar::NADA;
+
+// Valor propuesto, a la espera de que se confirme. Se muestra en la pregunta:
+// confirmar a ciegas "¿seguro?" sin decir a que se va a cambiar no es confirmar.
+uint8_t g_pendiente = 0;
+
+// Potencias ofrecidas, de mas a menos. 22 dBm es el maximo del SX1262 y el que
+// da ~193 mW p.r.e. con la antena de 3 dBi incluida, dentro de los 500 mW de la
+// subbanda g3.
+const int8_t POTENCIAS[] = {22, 17, 14, 10, 5, 2};
+constexpr int N_POTENCIAS = sizeof(POTENCIAS) / sizeof(POTENCIAS[0]);
+
+const char* nombrePreset(uint8_t p) {
+  switch (p) {
+    case 1:  return S_PRESET_1;
+    case 2:  return S_PRESET_2;
+    default: return S_PRESET_0;
+  }
+}
 
 // Pantalla de informacion. NO entra en la rotacion del TAB: se abre desde
 // ajustes y se sale con ESC. Anadirla a ft_screen_t la habria metido en el ciclo.
@@ -459,18 +484,23 @@ int siguienteNivel(int nivel) { return nivel >= UI_NIVELES ? 1 : nivel + 1; }
 
 struct Opcion { const char* etiqueta; };
 // El orden importa: los indices se usan en el manejador de ENTER. "Avanzado"
-// desaparece -- era una fila que no hacia nada y no prometia nada concreto -- y
-// en su sitio va la frase del grupo, que es lo unico realmente delicado de aqui.
+// desaparecio -- era una fila que no hacia nada y no prometia nada concreto.
+//
+// Las cinco ultimas son las delicadas y van juntas AL FINAL, en naranja y detras
+// de confirmacion. Agruparlas es deliberado: hay que bajar a proposito.
 const Opcion OPCIONES[] = {
     {S_SET_NOMBRE}, {S_SET_CORTO}, {S_SET_BRILLO}, {S_SET_VOLUMEN},
-    {S_SET_GPS}, {S_SET_FRASE}, {S_SET_INFO},
+    {S_SET_GPS}, {S_SET_INFO},
+    {S_SET_FRASE}, {S_SET_PRESET}, {S_SET_POTENCIA}, {S_SET_HOPS}, {S_SET_FABRICA},
 };
 constexpr int N_OPCIONES = sizeof(OPCIONES) / sizeof(OPCIONES[0]);
 
 // Indices, para no repartir numeros magicos por el manejador de teclas.
 enum {
-  OPT_NOMBRE = 0, OPT_CORTO, OPT_BRILLO, OPT_VOLUMEN, OPT_GPS, OPT_FRASE, OPT_INFO
+  OPT_NOMBRE = 0, OPT_CORTO, OPT_BRILLO, OPT_VOLUMEN, OPT_GPS, OPT_INFO,
+  OPT_FRASE, OPT_PRESET, OPT_POTENCIA, OPT_SALTOS, OPT_FABRICA
 };
+constexpr int OPT_PRIMERA_DELICADA = OPT_FRASE;
 
 void pantallaAjustes() {
   barraEstado();
@@ -490,9 +520,9 @@ void pantallaAjustes() {
     const int cy = y + dy / 2;
     if (i == g_sel) D.fillRect(0, y, TFT_W, dy, 0x1082);
 
-    // La frase en naranja: es la unica fila de aqui que puede dejar el aparato
-    // incomunicado, y conviene que se vea distinta antes de pulsarla.
-    const bool delicada = (i == OPT_FRASE);
+    // Las delicadas en naranja: pueden dejar el aparato incomunicado o sin
+    // configuracion, y conviene que se vean distintas antes de pulsarlas.
+    const bool delicada = (i >= OPT_PRIMERA_DELICADA);
     D.setTextDatum(middle_left);
     D.setTextColor(delicada ? TFT_ORANGE : TFT_WHITE);
     D.drawString(OPCIONES[i].etiqueta, 6, cy);
@@ -506,13 +536,18 @@ void pantallaAjustes() {
                        nivelDe(c.brillo, BRILLO_MIN_PCT, BRILLO_MAX_PCT), UI_NIVELES); break;
       case 3: snprintf(v, sizeof(v), "%d/%d",
                        nivelDe(c.volumen, VOLUMEN_MIN, VOLUMEN_MAX), UI_NIVELES); break;
-      case 4: snprintf(v, sizeof(v), "%s", c.gps_activo ? S_ACTIVADO : S_DESACTIVADO); break;
+      case OPT_GPS: snprintf(v, sizeof(v), "%s",
+                             c.gps_activo ? S_ACTIVADO : S_DESACTIVADO); break;
+      case OPT_INFO: snprintf(v, sizeof(v), ">"); break;
       // La frase NO se guarda en ningun sitio, solo la clave derivada, asi que
       // aqui se muestra el nombre de canal: sale de la propia frase, y sirve
       // para comprobar de un vistazo que dos aparatos estan en el mismo grupo
       // sin ensenar la frase a nadie.
-      case 5: snprintf(v, sizeof(v), "%s", c.canal); break;
-      case 6: snprintf(v, sizeof(v), ">"); break;
+      case OPT_FRASE:    snprintf(v, sizeof(v), "%s", c.canal); break;
+      case OPT_PRESET:   snprintf(v, sizeof(v), "%s", nombrePreset(c.preset)); break;
+      case OPT_POTENCIA: snprintf(v, sizeof(v), "%d dBm", (int)c.tx_dbm); break;
+      case OPT_SALTOS:   snprintf(v, sizeof(v), "%u", (unsigned)c.hop_limit); break;
+      case OPT_FABRICA:  snprintf(v, sizeof(v), ">"); break;
       default: break;
     }
 
@@ -627,26 +662,67 @@ void pantallaEditor() {
   D.drawString(S_EDIT_GUARDAR, 6, TFT_H - 12);
 }
 
-// Confirmacion antes de cambiar la frase. Es la unica ruta destructiva de los
-// ajustes, y la restriccion nº 8 pide que no se llegue de un solo golpe.
+// Confirmacion de las rutas delicadas. La restriccion nº 8 pide que a ningun
+// estado roto se llegue de un solo golpe.
+//
+// Muestra ADEMAS el valor propuesto: preguntar "¿seguro?" sin decir a que se va
+// a cambiar no es confirmar nada.
 void pantallaConfirmar() {
   D.fillScreen(0x3000);
   D.setFont(&fonts::Font0);
   D.setTextDatum(middle_center);
 
+  const char* l1 = ""; const char* l2 = "";
+  const char* l3 = ""; const char* l4 = "";
+  char nuevo[24] = {};
+
+  switch (g_confirmar) {
+    case Confirmar::FRASE:
+      l1 = S_AVISO_INCOMUN_1; l2 = S_AVISO_INCOMUN_2;
+      l3 = S_AVISO_INCOMUN_3; l4 = S_AVISO_INCOMUN_4;
+      break;
+    case Confirmar::PRESET:
+      l1 = S_AVISO_PRESET_1; l2 = S_AVISO_PRESET_2;
+      l3 = S_AVISO_PRESET_3; l4 = S_AVISO_PRESET_4;
+      snprintf(nuevo, sizeof(nuevo), "-> %s", nombrePreset(g_pendiente));
+      break;
+    case Confirmar::POTENCIA:
+      l1 = S_AVISO_POTENCIA_1; l2 = S_AVISO_POTENCIA_2;
+      l3 = S_AVISO_POTENCIA_3; l4 = S_AVISO_POTENCIA_4;
+      snprintf(nuevo, sizeof(nuevo), "-> %d dBm", (int)POTENCIAS[g_pendiente]);
+      break;
+    case Confirmar::SALTOS:
+      l1 = S_AVISO_SALTOS_1; l2 = S_AVISO_SALTOS_2;
+      l3 = S_AVISO_SALTOS_3; l4 = S_AVISO_SALTOS_4;
+      snprintf(nuevo, sizeof(nuevo), "-> %u", (unsigned)g_pendiente);
+      break;
+    case Confirmar::FABRICA:
+      l1 = S_AVISO_FABRICA_1; l2 = S_AVISO_FABRICA_2;
+      l3 = S_AVISO_FABRICA_3; l4 = S_AVISO_FABRICA_4;
+      break;
+    default: break;
+  }
+
   D.setTextSize(2);
   D.setTextColor(TFT_WHITE);
-  D.drawString(S_SEGURO, TFT_W / 2, 24);
+  D.drawString(S_SEGURO, TFT_W / 2, 20);
   D.setTextSize(1);
 
   D.setTextColor(0xFCE0);
-  D.drawString(S_AVISO_INCOMUN_1, TFT_W / 2, 54);
-  D.drawString(S_AVISO_INCOMUN_2, TFT_W / 2, 66);
-  D.drawString(S_AVISO_INCOMUN_3, TFT_W / 2, 78);
-  D.drawString(S_AVISO_INCOMUN_4, TFT_W / 2, 90);
+  D.drawString(l1, TFT_W / 2, 46);
+  D.drawString(l2, TFT_W / 2, 58);
+  D.drawString(l3, TFT_W / 2, 70);
+  D.drawString(l4, TFT_W / 2, 82);
+
+  if (nuevo[0]) {
+    D.setFont(&fonts::Font2);
+    D.setTextColor(TFT_WHITE);
+    D.drawString(nuevo, TFT_W / 2, 100);
+    D.setFont(&fonts::Font0);
+  }
 
   D.setTextColor(TFT_WHITE);
-  D.drawString(S_CONFIRMA, TFT_W / 2, 118);
+  D.drawString(S_CONFIRMA, TFT_W / 2, 122);
   D.setTextDatum(top_left);
 }
 
@@ -765,7 +841,7 @@ void pantallaSosRecibido() {
 
 void abrirEditor(Campo c) {
   g_campo       = c;
-  g_confirmando = false;
+  g_confirmar   = Confirmar::NADA;
   g_derivando   = false;
 
   // Se precarga el valor actual: cambiar una letra del nombre no deberia
@@ -782,10 +858,57 @@ void abrirEditor(Campo c) {
 
 void cerrarEditor() {
   g_campo       = Campo::NINGUNO;
-  g_confirmando = false;
+  g_confirmar   = Confirmar::NADA;
   g_derivando   = false;
   g_edit[0]     = '\0';
   g_edit_n      = 0;
+}
+
+// Aplica la accion delicada que estaba esperando confirmacion.
+void aplicarConfirmado() {
+  auto& c = store::configMutable();
+
+  switch (g_confirmar) {
+    case Confirmar::PRESET:
+      c.preset = g_pendiente;
+      // Si la radio esta ocupada no se reprograma ahora; queda guardado y entra
+      // en el siguiente arranque. Mejor eso que cortar una transmision a medias.
+      if (!radio::radioAplicarPreset(c.preset, (int8_t)c.tx_dbm)) hal::beepError();
+      else                                                       hal::beep();
+      store::guardar();
+      break;
+
+    case Confirmar::POTENCIA:
+      c.tx_dbm = (uint8_t)POTENCIAS[g_pendiente];
+      if (!radio::radioAplicarPreset(c.preset, (int8_t)c.tx_dbm)) hal::beepError();
+      else                                                       hal::beep();
+      store::guardar();
+      break;
+
+    case Confirmar::SALTOS:
+      // No pasa por la radio: el limite de saltos va en la cabecera de cada
+      // paquete, y lo pone app::transmitir() al construirla.
+      c.hop_limit = g_pendiente;
+      store::guardar();
+      hal::beep();
+      break;
+
+    case Confirmar::FABRICA:
+      store::restablecer();
+      app::recargarCanal();
+      // No se reinicia el aparato: 'configurado' vuelve a false y pintar() manda
+      // al asistente de primer arranque en el siguiente ciclo.
+      g_pant   = SCR_CHAT;
+      g_sel    = 0;
+      g_top    = 0;
+      g_scroll = 0;
+      g_info   = false;
+      hal::beep();
+      break;
+
+    default: break;
+  }
+  cerrarEditor();
 }
 
 void guardarNombre() {
@@ -907,12 +1030,10 @@ void pintar() {
   if (s == app::Sos::RECIBIDO)      pantallaSosRecibido();
   else if (s == app::Sos::ARMANDO)  pantallaSosArmando();
   else if (!store::config().configurado) pantallaAsistente();
-  // El editor y su confirmacion se pintan POR ENCIMA de los ajustes, no dentro:
-  // ocupan la pantalla entera y no comparten nada con la lista.
-  else if (g_campo != Campo::NINGUNO) {
-    if (g_confirmando) pantallaConfirmar();
-    else               pantallaEditor();
-  }
+  // El editor y las confirmaciones se pintan POR ENCIMA de los ajustes, no
+  // dentro: ocupan la pantalla entera y no comparten nada con la lista.
+  else if (g_confirmar != Confirmar::NADA) pantallaConfirmar();
+  else if (g_campo != Campo::NINGUNO)      pantallaEditor();
   else if (g_info) { D.fillScreen(TFT_BLACK); pantallaInfo(); }
   else {
     D.fillScreen(TFT_BLACK);
@@ -991,15 +1112,25 @@ bool tecla(const hal::Evento& ev) {
     return true;
   }
 
-  // --- editor de los ajustes: se come todas las teclas mientras este abierto ---
-  if (g_campo != Campo::NINGUNO) {
+  // --- confirmacion de una accion delicada: solo ENTER o ESC ---
+  if (g_confirmar != Confirmar::NADA) {
     if (g_derivando) return true;          // ocupado derivando: no encolar teclas
 
-    if (g_confirmando) {
-      if (ev.tecla == hal::Tecla::ENTER)     aplicarFrase();
-      else if (ev.tecla == hal::Tecla::ESC)  g_confirmando = false;  // vuelve a editar
-      return true;
+    if (ev.tecla == hal::Tecla::ENTER) {
+      if (g_confirmar == Confirmar::FRASE) aplicarFrase();
+      else                                 aplicarConfirmado();
+    } else if (ev.tecla == hal::Tecla::ESC) {
+      // En la frase, ESC vuelve al editor SIN perder lo escrito. En las demas no
+      // hay nada que editar, asi que se cancela del todo.
+      if (g_confirmar == Confirmar::FRASE) g_confirmar = Confirmar::NADA;
+      else                                 cerrarEditor();
     }
+    return true;
+  }
+
+  // --- editor de los ajustes: se come todas las teclas mientras este abierto ---
+  if (g_campo != Campo::NINGUNO) {
+    if (g_derivando) return true;
 
     switch (ev.tecla) {
       case hal::Tecla::CARACTER: {
@@ -1022,7 +1153,7 @@ bool tecla(const hal::Evento& ev) {
         // Vacio se rechaza: un nodo sin nombre sale como numero hexadecimal, y
         // una frase vacia dejaria el grupo sin clave.
         if (!g_edit_n) { hal::beepError(); break; }
-        if (g_campo == Campo::FRASE) g_confirmando = true;
+        if (g_campo == Campo::FRASE) g_confirmar = Confirmar::FRASE;
         else                         guardarNombre();
         break;
       case hal::Tecla::ESC:
@@ -1128,6 +1259,34 @@ bool tecla(const hal::Evento& ev) {
           case OPT_FRASE:  abrirEditor(Campo::FRASE);  hal::beep(); break;
 
           case OPT_INFO:   g_info = true; hal::beep(); break;
+
+          // Filas delicadas: se PROPONE el valor siguiente y se pregunta. No se
+          // toca nada hasta que se confirme.
+          case OPT_PRESET:
+            g_pendiente = (uint8_t)((c.preset + 1) % PRESET_COUNT);
+            g_confirmar = Confirmar::PRESET;
+            break;
+
+          case OPT_POTENCIA: {
+            // Indice de la potencia actual en la tabla, para ofrecer la siguiente.
+            int i = 0;
+            for (int k = 0; k < N_POTENCIAS; k++)
+              if (POTENCIAS[k] == (int8_t)c.tx_dbm) { i = k; break; }
+            g_pendiente = (uint8_t)((i + 1) % N_POTENCIAS);
+            g_confirmar = Confirmar::POTENCIA;
+            break;
+          }
+
+          case OPT_SALTOS:
+            // 1..HOP_MAX, dando la vuelta. Cero dejaria el paquete sin salir del
+            // nodo, asi que el minimo es 1.
+            g_pendiente = (uint8_t)(c.hop_limit >= HOP_MAX ? 1 : c.hop_limit + 1);
+            g_confirmar = Confirmar::SALTOS;
+            break;
+
+          case OPT_FABRICA:
+            g_confirmar = Confirmar::FABRICA;
+            break;
 
           default: hal::beep(); break;
         }

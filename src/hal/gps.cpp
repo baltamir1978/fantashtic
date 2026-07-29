@@ -46,6 +46,24 @@ void gpsBegin() {
                 GPS_BAUD, PIN_GPS_RX, PIN_GPS_TX);
 }
 
+void gpsRitmo(uint16_t ms) {
+  if (!g_begun || !g_on) return;
+  if (ms < 100) ms = 100;            // el modulo no admite mas de 10 Hz
+
+  // $PCAS02,<ms>*CS  -- el checksum es el XOR de todo lo que hay entre $ y *.
+  // Se calcula aqui a proposito: una constante mal copiada haria que el modulo
+  // ignore el comando sin decir nada, y eso es muy dificil de ver.
+  char cuerpo[24];
+  const int n = snprintf(cuerpo, sizeof(cuerpo), "PCAS02,%u", (unsigned)ms);
+  if (n <= 0 || n >= (int)sizeof(cuerpo)) return;
+
+  uint8_t cs = 0;
+  for (int i = 0; i < n; i++) cs ^= (uint8_t)cuerpo[i];
+
+  Serial1.printf("$%s*%02X\r\n", cuerpo, cs);
+  Serial.printf("GPS: ritmo a %u ms ($%s*%02X)\n", (unsigned)ms, cuerpo, cs);
+}
+
 void gpsEncender(bool on) {
   if (on && !g_begun) { gpsBegin(); return; }
   g_on = on;
