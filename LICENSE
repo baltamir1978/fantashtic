@@ -1,0 +1,40 @@
+MIT License
+
+Copyright (c) 2026 Bruno Altamirano
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+AVISO DE SEGURIDAD Y CUMPLIMIENTO NORMATIVO
+
+Este firmware controla un transmisor de radio. Quien lo use es responsable de
+cumplir la normativa de su país sobre banda, potencia y ciclo de trabajo.
+
+Los valores por defecto (869,525 MHz, +22 dBm conducidos, 10 % de ciclo de
+trabajo por hora) corresponden a la subbanda ETSI g3 y son para uso en la
+Union Europea. El limitador de ciclo de trabajo es deliberadamente imposible
+de desactivar desde la interfaz de usuario; no lo quites.
+
+Transmitir sin antena conectada destruye el amplificador del SX1262 de forma
+permanente.
+
+Esto no es un dispositivo de seguridad. La funcion de emergencia depende de que
+haya cobertura radio, y no la hay siempre. No sustituye a un plan, a un telefono
+ni al sentido comun.

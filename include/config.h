@@ -1,0 +1,264 @@
+#pragma once
+//
+// Fantashtic - configuracion central del proyecto.
+//
+// TODOS los pines y constantes viven aqui. Ningun otro archivo debe contener
+// un numero de pin literal.
+//
+// Pines verificados contra:
+//   - https://docs.m5stack.com/en/core/Cardputer%20Adv
+//   - https://docs.m5stack.com/en/cap/Cap_LoRa-1262
+//   - meshtastic/firmware  variants/esp32s3/m5stack_cardputer_adv/variant.h
+//
+// Los marcados TODO(hw) NO estan confirmados: verificar en la primera sesion
+// con hardware antes de fiarse de ellos.
+//
+#include <stdint.h>
+
+// secrets.h esta en .gitignore y no existe en un clon recien hecho. Lo unico
+// que define es la sal de PBKDF2 del despliegue (ver la seccion CRIPTOGRAFIA).
+// __has_include evita tener que crear el archivo solo para compilar.
+#if defined(__has_include)
+#  if __has_include("secrets.h")
+#    include "secrets.h"
+#  endif
+#endif
+
+#define FT_VERSION        "0.1.0"
+#define FT_NOMBRE         "Fantashtic"
+
+// =============================================================================
+//  PANTALLA  -  ST7789V2, 240x135, SPI2_HOST (lo reclama M5GFX en M5.begin())
+// =============================================================================
+#define PIN_TFT_CS        37
+#define PIN_TFT_DC        34
+#define PIN_TFT_MOSI      35
+#define PIN_TFT_SCK       36
+#define PIN_TFT_RST       33
+#define PIN_TFT_BL        38    // OJO: tambien alimenta el LED RGB
+#define TFT_W             240
+#define TFT_H             135
+
+// =============================================================================
+//  I2C INTERNO  -  TCA8418 (teclado), BMI270 (IMU), ES8311 (audio),
+//                  PI4IOE5V6408 (switch de antena RF del Cap LoRa-1262)
+// =============================================================================
+#define PIN_I2C_SDA        8
+#define PIN_I2C_SCL        9
+#define PIN_KB_INT        11
+
+// Direccion del expansor que habilita el switch de antena RF.
+//
+// 0x43, confirmada en la documentacion de M5Stack: el ejemplo oficial del Cap
+// LoRa-1262 hace literalmente
+//     m5::PI4IOE5V6408_Class ioe(0x43, 400000, &m5::In_I2C);
+// y los registros 0x03 / 0x05 / 0x07 de abajo coinciden con la clase
+// PI4IOE5V6408_Class de M5Unified.
+//
+// OJO: en la sesion del 29-jul-2026 el expansor NO hizo ACK en el aparato, ni
+// en 0x43 ni en 0x44, ni a 100 kHz ni a 400 kHz, con el Cap montado y estando
+// el bus interno sano (ES8311, TCA8418 y BMI270 si responden). Ver ESTADO.md.
+// Poner aqui la direccion NO relaja la seguridad: antennaBegin() exige releer
+// los tres registros, asi que mientras el chip no conteste el estado sera
+// NO_RESPONDE y radioBegin() seguira negandose a arrancar.
+//
+// 0xFF es el centinela de "sin configurar". NO usar 0x00: esa es la direccion
+// de llamada general de I2C, y escribir ahi difunde a TODOS los dispositivos.
+#define I2C_ADDR_ANTSW    0x43
+#define I2C_ADDR_ANTSW_SIN_CONFIGURAR 0xFF
+
+// Registros del PI4IOE5V6408. Los tres son necesarios: al arrancar, P0 esta
+// como entrada Y en alta impedancia. Escribir solo el de salida NO basta.
+#define PI4IOE_REG_DIR    0x03   // direccion   : 1 = salida
+#define PI4IOE_REG_OUT    0x05   // valor       : 1 = HIGH
+#define PI4IOE_REG_HIZ    0x07   // alta imped. : 0 = activo
+#define PI4IOE_ANT_MASK   0x01   // P0 -> SX_ANT_SW
+
+// =============================================================================
+//  BUS SPI COMPARTIDO  -  LoRa + microSD, en SPI3_HOST (HSPI)
+//
+//  NO usar el objeto global SPI: ese es SPI2_HOST, el de la pantalla.
+//  Remultiplexarlo romperia el display.
+// =============================================================================
+#define PIN_SPI_SCK       40
+#define PIN_SPI_MISO      39
+#define PIN_SPI_MOSI      14
+#define SPI_FREQ_LORA     4000000UL
+#define SPI_FREQ_SD       20000000UL
+
+// =============================================================================
+//  LoRa  -  Cap LoRa-1262, SX1262, +22 dBm, RP-SMA
+// =============================================================================
+#define PIN_LORA_CS        5
+#define PIN_LORA_DIO1      4    // IRQ
+#define PIN_LORA_BUSY      6    // variant.h lo llama LORA_DIO2. Es BUSY.
+#define PIN_LORA_RST       3
+
+#define LORA_TCXO_V       1.8f  // DIO3 alimenta el TCXO. Fallback a 0.0 si
+                                // begin() devuelve RADIOLIB_ERR_SPI_CMD_TIMEOUT
+#define LORA_CURRENT_MA    140  // OCP maximo del SX1262
+
+// =============================================================================
+//  microSD  -  mismo bus SPI que la LoRa. Opcional: sin tarjeta se sigue
+//              funcionando, solo se pierde el historial persistente.
+// =============================================================================
+#define PIN_SD_CS         12
+#define SD_DIR_BASE       "/fantashtic"
+#define SD_DIR_CHAT       "/fantashtic/chat"
+#define SD_DIR_CAMPO      "/fantashtic/campo"
+#define SD_FILE_NODES     "/fantashtic/nodes.bin"
+
+// =============================================================================
+//  GPS  -  ATGM336H-6N (AT6668) en el Cap LoRa-1262, UART1
+//
+//  RX del ESP = 15 (recibe del TX del GPS), TX del ESP = 13.
+//  La tabla del bus EXT de M5 dice lo contrario; se contradice con la pagina
+//  del Cap y con variant.h, que coinciden entre si. TODO(hw): confirmar.
+// =============================================================================
+#define PIN_GPS_RX        15
+#define PIN_GPS_TX        13
+#define GPS_BAUD          115200
+
+// =============================================================================
+//  VARIOS
+// =============================================================================
+#define PIN_BUTTON         0    // pulsacion larga = SOS
+#define PIN_BATTERY       10
+#define BAT_MULTIPLIER    2.0f  // divisor 100k+100k. variant.h usa 2*1.02, pero
+                                // ese 1.02 es un fudge para mostrar "cargando"
+#define BAT_SAMPLES       16
+#define PIN_NEOPIXEL      21    // CONFIRMADO: _pin_table_other0 de M5Unified
+                                // asocia board_M5CardputerADV a GPIO 21
+#define NEOPIXEL_COUNT     1
+// El LED comparte rail con la retroiluminacion (GPIO 38): con la pantalla
+// apagada no se enciende. No hay aviso luminoso de bajo consumo.
+
+// =============================================================================
+//  RADIO  -  parametros PHY. Deben coincidir con Meshtastic byte a byte.
+// =============================================================================
+#define RF_FREQ_MHZ       869.525f   // EU_868 + LONG_FAST -> slot unico
+#define RF_SYNC_WORD      0x2B
+#define RF_PREAMBLE       16
+#define RF_TX_POWER_DBM   22         // conducidos. Con antena 3 dBi = ~193 mW ERP
+#define RF_TX_POWER_MIN    2
+#define RF_TX_POWER_MAX   22
+
+// Presets (SF, BW kHz, CR). LONG_FAST es el defecto.
+#define PRESET_LONG_FAST_SF       11
+#define PRESET_LONG_FAST_BW       250.0f
+#define PRESET_LONG_FAST_CR        5
+
+// Region EU_868 - RadioInterface.cpp: RDEF(EU_868, 869.4, 869.65, 10, 0, 27, ...)
+#define REGION_FREQ_START 869.4f
+#define REGION_FREQ_END   869.65f
+#define REGION_DUTY_PCT   10         // limite duro, ETSI subbanda g3
+#define REGION_PWR_LIMIT  27         // conducidos, no ERP
+
+// Ventana de contencion  -  RadioInterface.h
+#define CW_MIN             3
+#define CW_MAX             8
+#define NUM_SYM_CAD        2
+#define PROCESSING_TIME_MS 4500
+
+// Duty cycle
+#define DUTY_WINDOW_MIN   60         // ventana rodante, en cubos de 1 minuto
+#define DUTY_HARD_PCT     10.0f      // bloquea todo TX
+#define DUTY_SOFT_PCT      8.0f      // corta envios automaticos (pos, nodeinfo)
+
+// =============================================================================
+//  PROTOCOLO  -  constantes de Meshtastic. Citar la fuente al tocarlas.
+// =============================================================================
+#define MESH_HEADER_LEN        16    // RadioInterface.h
+#define MESH_MAX_LORA_PAYLOAD 255
+#define MESH_MAX_ENCRYPTED    239    // 255 - 16
+#define MESH_MAX_DATA_PAYLOAD 233    // mesh.options: Data.payload max_size:233
+#define MESH_BROADCAST_ADDR   0xFFFFFFFFu
+
+#define FLAG_HOP_LIMIT_MASK   0x07   // bits 0-2
+#define FLAG_WANT_ACK_MASK    0x08   // bit 3
+#define FLAG_VIA_MQTT_MASK    0x10   // bit 4
+#define FLAG_HOP_START_MASK   0xE0   // bits 5-7
+#define FLAG_HOP_START_SHIFT     5
+
+#define HOP_MAX                7
+#define HOP_DEFAULT            3     // con 4 nodos sobra y limita el trafico
+
+#define PORTNUM_TEXT_MESSAGE   1     // portnums.proto
+#define PORTNUM_POSITION       3
+#define PORTNUM_NODEINFO       4
+#define PORTNUM_ROUTING        5
+#define PORTNUM_TELEMETRY     67
+
+// =============================================================================
+//  CRIPTOGRAFIA
+// =============================================================================
+#define PSK_LEN               32     // AES-256-CTR
+#define CTR_COUNTER_SIZE       4     // CryptoEngine.cpp: setCounterSize(4)
+
+// Sal de PBKDF2. La de verdad se define en include/secrets.h, que NO se
+// commitea; este valor es solo el de por defecto, y es el que reproduce los
+// vectores publicados en docs/VECTORES.md y los tests de test_util.
+//
+// Que la sal sea publica no rompe PBKDF2 -- la sal nunca fue el secreto, la
+// frase si. Lo que evita sacarla del repositorio es que UNA sola tabla
+// precalculada sirva contra todos los despliegues: con una sal por grupo, hay
+// que rehacer el trabajo para cada uno. Es lo que en la practica se llama
+// pepper. La frase sigue siendo lo unico que hay que proteger de verdad.
+//
+// OJO al cambiarla: la clave derivada vive en NVS, asi que los nodos ya
+// configurados siguen funcionando. Pero un nodo NUEVO derivara otra clave de la
+// MISMA frase y no se entendera con ellos. Al cambiar la sal hay que repasar la
+// frase en TODOS los nodos.
+#ifndef PBKDF2_SALT
+#define PBKDF2_SALT           "fantashtic-v1"
+#endif
+#define PBKDF2_ITERS          20000
+#define CHANNEL_NAME_LEN      12     // "FT-" + 5 chars + NUL, con margen
+
+// =============================================================================
+//  BUFFERS  -  todos estaticos. Cero asignaciones dinamicas tras setup().
+// =============================================================================
+#define MAX_TX_QUEUE          16     // igual que upstream
+#define DEDUP_TABLE_SIZE     128
+#define DEDUP_RELAYERS         3     // NUM_RELAYERS en PacketHistory
+#define MAX_NODES             16
+#define CHAT_RAM_MESSAGES     60
+#define MSG_MAX_BYTES        180     // BYTES UTF-8, no caracteres
+#define MSG_BUF_BYTES        200
+#define NODE_LONGNAME_LEN     16     // truncar: upstream permite hasta 40
+#define NODE_SHORTNAME_LEN     5
+
+// =============================================================================
+//  TIEMPOS (ms)
+// =============================================================================
+#define TICK_MS               10
+#define SCREEN_TIMEOUT_MS     30000
+#define SOS_HOLD_MS           2000   // pulsacion larga del boton
+#define SOS_COUNTDOWN_MS      3000
+#define SOS_BURST_INTERVAL_MS 30000  // 3 envios separados 30 s
+#define SOS_BURST_COUNT        3
+#define SOS_REPEAT_MS         300000 // luego cada 5 min
+#define SOS_REPEAT_MAX        12     // tope: una hora
+#define NODEINFO_INTERVAL_MS  900000 // 15 min
+#define TELEMETRY_INTERVAL_MS 600000 // 10 min
+#define POSITION_MIN_DIST_M   100
+#define POSITION_MAX_AGE_MS   900000 // 15 min
+#define SD_FLUSH_INTERVAL_MS  1000   // como mucho un volcado por segundo
+#define NODEDB_DEBOUNCE_MS    60000
+#define GPS_NOFIX_WARN_MS     300000 // 5 min
+
+// =============================================================================
+//  INTERFAZ
+// =============================================================================
+#define UI_STATUSBAR_H        12
+#define UI_FOOTER_H           11   // banda del pie (ayuda o aviso), en Font0
+#define UI_ROW_H              20   // fila de chat o de lista con Font2 (16 px)
+#define BAT_LOW_PCT           15
+
+enum ft_screen_t {
+  SCR_CHAT = 0,
+  SCR_NODES,
+  SCR_COMPASS,
+  SCR_SETTINGS,
+  SCR_COUNT
+};

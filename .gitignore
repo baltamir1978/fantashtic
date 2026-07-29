@@ -1,0 +1,23 @@
+.pio/
+.vscode/
+.idea/
+
+# LA SAL DE ESTE DESPLIEGUE NUNCA SE COMMITEA.
+# Ver include/secrets.example.h. El archivo es opcional: config.h lo incluye con
+# __has_include, asi que un clon recien hecho compila sin el.
+include/secrets.h
+
+# Permisos locales de la maquina, no del proyecto
+.claude/settings.local.json
+
+*.bin
+*.elf
+*.map
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# Artefactos de compilacion de los tests en host
+*.o
+tests
