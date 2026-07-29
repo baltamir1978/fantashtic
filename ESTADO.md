@@ -458,6 +458,72 @@ Dos cosas más que conviene mirar de paso, porque son las que quedan en la lista
 2. **Qué hacen con el GPS.** Si alguno consigue dormir un AT6668/ATGM336H, ahí estará el
    comando de standby que no aparece en las fuentes públicas del chip.
 
+---
+
+## 📌 PARA MAÑANA: pantalla de posición propia
+
+Una pantalla nueva con los datos del GPS: **latitud, longitud, altitud, satélites y precisión.**
+
+No es solo diagnóstico: **leer tus coordenadas en voz alta por radio** es un uso real en el
+campo, y hoy no hay forma de verlas en el aparato — solo salen por consola en `informeGps()`,
+que requiere un ordenador enchufado. Eso también decide dónde va (ver abajo).
+
+### Qué mostrar
+
+Todo menos una cosa está ya en `hal::Fix`, así que no hay que tocar el parser:
+
+| Fila | De dónde sale | Formato propuesto |
+|---|---|---|
+| Latitud | `f.lat_e7 * 1e-7` | `40.50996` — decimal, 5 decimales (~1 m). Es lo que se pega en Google Maps |
+| Longitud | `f.lon_e7 * 1e-7` | `-3.69238` |
+| Altitud | `f.altitud_m` | `713 m` |
+| Satélites | `f.satelites` | `9` — **ojo, ver abajo** |
+| Precisión | `f.hdop` | `1.6 bueno` — el número **y** la palabra |
+
+**El HDOP en palabras**, porque el número solo no le dice nada a nadie:
+`< 1` excelente · `1-2` bueno · `2-5` aceptable · `> 5` malo. Los valores medidos en este
+aparato han ido de 0,6 (junto a la ventana) a 7,1 (dentro de casa).
+
+**⚠ «Satélites visibles» no es lo que hay hoy.** `f.satelites` sale de la trama GGA vía
+TinyGPSPlus, y son los satélites **usados en la solución**, no los a la vista. Los visibles
+están en las tramas **GSV**, que TinyGPSPlus no parsea por defecto: hace falta un
+`TinyGPSCustom` sobre el campo 3 de `$GPGSV`. Decidir una de dos:
+
+- **Mostrar solo los usados** y etiquetarlo bien (`Sats usados`). Cero código nuevo.
+- **Mostrar los dos** (`9 de 14`), que es más informativo y es lo que enseñan los GPS de
+  verdad. Cuesta un `TinyGPSCustom` y hay que probar que el AT6668 emite GSV (debería, es
+  NMEA 0183 4.1 estándar).
+
+La segunda es mejor y no es cara. Pero **no etiquetar como «visibles» lo que son «usados»**:
+eso es dar un número equivocado con una etiqueta correcta, que es peor que no darlo.
+
+### Dónde va
+
+Dos opciones, y la primera es la recomendada:
+
+1. **Quinta pantalla en la rotación del TAB** (`SCR_COUNT` pasa a 5). A favor: se llega en un
+   toque, que es lo que hace falta si estás leyendo coordenadas por radio con prisa. En contra:
+   alarga el ciclo del TAB para todo el mundo, y con niños cada pantalla de más cuenta.
+2. **Con ENTER desde la brújula.** `ENTER` en `SCR_COMPASS` **está libre hoy** (el manejador no
+   tiene caso para esa pantalla), y es su hermana natural: la brújula dice dónde está *el otro*,
+   ésta dónde estás *tú*. A favor: no alarga el TAB. En contra: hay que saber que está ahí.
+
+### Detalles de dibujado que ya están resueltos y conviene reusar
+
+- Caben **5 filas de `UI_ROW_H` (20 px)** entre la barra de estado y el pie: `filasQueCaben()`
+  lo calcula. Justo las cinco filas de la tabla, sin scroll.
+- **Font2** para los valores: son números que hay que leer en voz alta. Etiqueta a la izquierda
+  en Font0 y valor a la derecha en Font2, como hace `pantallaInfo()`.
+- Terminar con `pieAviso()`, que ya fuerza Font0 él mismo.
+- Y `pintar()` deja Font0 antes de cada pantalla, así que no hay que acordarse de restaurarla.
+
+### Lo que tiene que funcionar SIN fix
+
+Es la mitad del valor de la pantalla: cuando no hay fix, tiene que decir **por qué**. Con
+`hal::gpsBytesRecibidos() == 0` el UART está mal; con bytes pero sin fix, es cobertura. Esa
+distinción ya existe en `informeGps()` y en el aviso de la barra de estado — reusar el criterio,
+no inventar otro. Mostrar los bytes NMEA recibidos y los satélites, que sí llegan sin fix.
+
 **Efecto colateral que conviene saber**: con ese firmware dentro, los dos aparatos dejaron de
 responder al flasheo automático (`No serial data received`), porque el USB está apagado la mayor
 parte del tiempo. **No es un ladrillo**: el bootloader del ESP32-S3 está en ROM. Se recupera con

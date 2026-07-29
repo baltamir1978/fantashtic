@@ -295,6 +295,11 @@ Reglas de dependencia:
 - Ajustes: "Avanzado" se quitó (no hacía nada) y en su sitio está "Frase del grupo". Sigue sin
   interfaz lo de preset, potencia y saltos máximos, que en `strings.h` tienen texto pero no
   pantalla. Cambiarlos afecta al enlace, así que van detrás de confirmación cuando se hagan.
+- **Falta una pantalla de posición propia** (lat, lon, altitud, satélites, precisión). Hoy esos
+  datos solo salen por consola en `informeGps()`, o sea que hacen falta un ordenador y un cable.
+  Especificada en `ESTADO.md`. Ojo con un detalle: `Fix::satelites` son los satélites **usados
+  en la solución** (trama GGA), no los visibles; los visibles están en las tramas GSV, que
+  TinyGPSPlus no parsea sin un `TinyGPSCustom`. No etiquetar como "visibles" lo que son "usados".
 - **La geometría de las cuatro pantallas en Font2 está calculada, no vista.** El ancho se
   mide en tiempo de ejecución con `D.textWidth()` donde puede pisarse algo (el valor de cada
   fila de ajustes, la columna de detalle de nodos), pero las posiciones verticales son
