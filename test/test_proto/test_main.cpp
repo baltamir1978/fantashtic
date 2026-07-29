@@ -114,6 +114,48 @@ void test_data_salta_campos_desconocidos() {
   TEST_ASSERT_EQUAL_UINT32(1, d.portnum);
   TEST_ASSERT_EQUAL_size_t(2, d.payload_len);
   TEST_ASSERT_EQUAL_UINT8_ARRAY((const uint8_t*)"ab", d.payload, 2);
+  // want_response ya NO es un campo desconocido: se entiende. El request_id
+  // fixed32 de despues si se sigue saltando, y es lo que prueba que saltarlo
+  // deja el cursor en el sitio correcto.
+  TEST_ASSERT_TRUE(d.want_response);
+}
+
+// El descubrimiento de nodos depende de este campo: un NODEINFO con
+// want_response significa "aqui estoy, y tu quien eres". Sin el, un nodo que se
+// reinicia mientras el otro sigue encendido se queda sin ver a nadie hasta 15
+// minutos despues.
+void test_data_want_response() {
+  uint8_t buf[64];
+
+  // Por defecto NO se codifica: proto3 omite los valores por defecto, y de eso
+  // depende que los vectores publicados sigan saliendo byte a byte iguales.
+  Data a;
+  a.portnum = 1;
+  a.payload_len = 2;
+  memcpy(a.payload, "ab", 2);
+  const size_t na = codificarData(a, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_size_t(6, na);              // 08 01 12 02 'a' 'b'
+
+  // Con want_response se anaden exactamente dos bytes, al final: los campos van
+  // en orden ascendente de numero, como los escribe el nanopb de Meshtastic.
+  Data b = a;
+  b.want_response = true;
+  const size_t nb = codificarData(b, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_size_t(8, nb);
+  TEST_ASSERT_EQUAL_UINT8(0x18, buf[6]);        // (campo 3 << 3) | varint
+  TEST_ASSERT_EQUAL_UINT8(0x01, buf[7]);
+
+  // Y vuelve a leerse.
+  Data r;
+  TEST_ASSERT_TRUE(decodificarData(buf, nb, &r));
+  TEST_ASSERT_TRUE(r.want_response);
+  TEST_ASSERT_EQUAL_UINT32(1, r.portnum);
+  TEST_ASSERT_EQUAL_size_t(2, r.payload_len);
+
+  // Ausente = false, no basura.
+  Data s;
+  TEST_ASSERT_TRUE(decodificarData(buf, na, &s));
+  TEST_ASSERT_FALSE(s.want_response);
 }
 
 // --- vectores: la prueba de fuego -------------------------------------------
@@ -204,6 +246,7 @@ int main(int, char**) {
   RUN_TEST(test_aes_rechaza_claves_invalidas);
   RUN_TEST(test_cabecera_ida_y_vuelta);
   RUN_TEST(test_data_salta_campos_desconocidos);
+  RUN_TEST(test_data_want_response);
   RUN_TEST(test_vectores);
   RUN_TEST(test_clave_incorrecta_se_rechaza);
   RUN_TEST(test_relay_no_toca_la_carga);

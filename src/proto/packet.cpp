@@ -112,6 +112,15 @@ size_t codificarData(const Data& d, uint8_t* out, size_t out_cap) {
     memcpy(out + n, d.payload, d.payload_len);
     n += d.payload_len;
   }
+
+  // campo 3, varint: want_response. SOLO si es true -- proto3 omite los valores
+  // por defecto, y de eso depende que los vectores de docs/VECTORES.md sigan
+  // saliendo byte a byte iguales.
+  if (d.want_response) {
+    if (n + 2 > out_cap) return 0;
+    out[n++] = 0x18;            // (campo 3 << 3) | varint
+    out[n++] = 0x01;
+  }
   return n;
 }
 
@@ -129,7 +138,8 @@ bool decodificarData(const uint8_t* in, size_t len, Data* d) {
       case 0: {                                  // varint
         uint64_t v = 0;
         if (!leerVarint(in, len, &pos, &v)) return false;
-        if (campo == 1) d->portnum = (uint32_t)v;
+        if (campo == 1) d->portnum       = (uint32_t)v;
+        if (campo == 3) d->want_response = (v != 0);
         break;
       }
       case 2: {                                  // delimitado por longitud

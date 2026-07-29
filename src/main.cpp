@@ -157,6 +157,28 @@ void informeEnergia() {
   mhz_anterior = mhz;
 }
 
+// Volcado de la tabla de nodos: es EXACTAMENTE lo que pinta la pantalla 2, asi
+// que si ahi sale "no se ve a nadie" o un numero en vez de un nombre, aqui se ve
+// si el problema es la tabla o el dibujado.
+void informeNodos() {
+  static uint32_t ultimo = 0;
+  if (millis() - ultimo < 10000) return;
+  ultimo = millis();
+
+  const auto& t = app::nodos();
+  Serial.printf("nodos: total %u", (unsigned)t.total());
+  for (size_t i = 0; i < t.capacidad(); i++) {
+    const auto* n = t.porIndice(i);
+    if (!n) continue;
+    char nom[8];
+    t.nombreMostrar(*n, nom, sizeof(nom));
+    Serial.printf("  | %08X '%s'%s hace %lus", (unsigned)n->num, nom,
+                  n->corto[0] ? "" : " SIN NOMBRE",
+                  (unsigned long)((millis() - n->visto_ms) / 1000));
+  }
+  Serial.println();
+}
+
 // Informe periodico del GPS por consola.
 //
 // En interior NO va a haber fix, pero los bytes NMEA deben llegar igual: es lo
@@ -329,6 +351,7 @@ void loop() {
   avisosDeEstado();
   informeGps();
   informeEnergia();
+  informeNodos();
 
   hal::Evento ev;
   if (hal::keysPoll(&ev)) {

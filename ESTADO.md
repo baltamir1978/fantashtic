@@ -351,6 +351,55 @@ rompe nada; cuánto ahorra en mA sigue sin medirse.
 
 ---
 
+## ✅ Descubrimiento de nodos arreglado (29-jul), salido de usar el aparato
+
+**Síntoma**: la pantalla de nodos decía «No se ve a nadie» hasta que el otro nodo mandaba un
+mensaje de texto, y entonces aparecía con el **número hexadecimal** en vez del nombre corto.
+
+**Causa**: la lógica de «NODEINFO bajo demanda» estaba **al revés**. Al oír a alguien cuyo
+nombre no se sabía, se anunciaba el nombre **propio** — pero lo que hace falta es que el otro
+anuncie el suyo. Solo funcionaba por casualidad, cuando los dos lados se desconocían a la vez.
+En cuanto uno ya conocía al otro, su regla no se disparaba, se quedaba callado, y el que
+acababa de arrancar seguía ciego hasta el siguiente envío periódico: **hasta 15 minutos**.
+
+Y pasaba **siempre** que un nodo se reiniciaba con el otro encendido, porque la tabla de nodos
+vive en RAM y se pierde al arrancar. Es decir, en cada sesión de flasheo.
+
+**Arreglo**: `Data.want_response`, campo 3 de `mesh.proto`. No estaba implementado —
+`proto::Data` solo tenía portnum y payload.
+
+- El NODEINFO del arranque y el que dispara oír a un desconocido van **pidiendo respuesta**.
+- Quien recibe un NODEINFO con `want_response` contesta con el suyo, y **sin** pedir respuesta:
+  si no, dos nodos se contestarían el uno al otro indefinidamente.
+- El periódico de cada 15 min **no** la pide: sería hacer contestar a los cuatro nodos cada
+  cuarto de hora sin motivo.
+- Se codifica **solo si es true**, porque proto3 omite los valores por defecto. De eso depende
+  que los paquetes existentes sigan saliendo byte a byte iguales, y `test_vectores` lo
+  comprueba.
+
+**Verificado en el aparato**, en el escenario exacto que fallaba (COM11 encendido, COM10
+reiniciado):
+
+```
+22:07:28  radio: transmision PERMITIDA        <- COM10 arranca, tabla vacia
+22:07:34  RX de 130C9A3C ... -> entregar y retransmitir
+22:07:34     ...NODEINFO de 130C9A3C, nodos en tabla: 1
+22:07:36  nodos: total 1  | 130C9A3C 'PONS' hace 2s
+```
+
+**Nombre aprendido en 7 s** desde el arranque, sin que nadie escriba nada. **64 tests** (uno
+nuevo, `test_data_want_response`).
+
+De paso se añadieron dos diagnósticos de consola que hicieron falta para esto y se quedan:
+
+- La traza de RX ahora dice **qué portnum** llegó (`...NODEINFO de 130C9A3C, nodos en tabla: 1`)
+  y avisa explícitamente si un paquete **no descifra**, que antes desaparecía sin rastro.
+- `informeNodos()` vuelca cada 10 s la tabla tal cual, con un `SIN NOMBRE` visible. Es
+  exactamente lo que pinta la pantalla 2, así que permite distinguir un fallo de la tabla de
+  un fallo del dibujado.
+
+---
+
 ## Qué está hecho
 
 | Fase | Contenido | Estado |

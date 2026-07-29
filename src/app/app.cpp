@@ -33,6 +33,11 @@ uint32_t g_seleccionado    = 0;
 
 // Envios periodicos.
 uint32_t g_prox_nodeinfo = 0;
+
+// Si el proximo NODEINFO va con want_response. Se pone al arrancar y al oir a un
+// nodo cuyo nombre no sabemos; se quita al contestar a otro, para no encadenar
+// respuestas indefinidamente.
+bool g_nodeinfo_pide = true;
 uint32_t g_prox_telemetry = 0;
 uint32_t g_ultima_pos_ms = 0;
 int32_t  g_ultima_lat = 0, g_ultima_lon = 0;
@@ -55,14 +60,16 @@ size_t         claveLen()  { return PSK_LEN; }
 // Devuelve el id del paquete, o 0 si no se pudo enviar. El id hace falta para
 // asociar el mensaje con su ACK implicito, y hay que registrarlo DESPUES de
 // guardar el mensaje: al reves se le pega al mensaje anterior.
-uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool automatico) {
+uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool automatico,
+                    bool pedir_respuesta = false) {
   if (!store::config().configurado) return 0;
 
   proto::Data d;
   d.portnum = portnum;
   if (n > sizeof(d.payload)) return 0;
   memcpy(d.payload, carga, n);
-  d.payload_len = n;
+  d.payload_len   = n;
+  d.want_response = pedir_respuesta;
 
   proto::Cabecera c;
   c.to        = MESH_BROADCAST_ADDR;
@@ -83,7 +90,10 @@ uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool autom
   return c.id;
 }
 
-void enviarNodeInfo() {
+// 'pedir_respuesta' pone want_response: "aqui estoy, y tu quien eres". Es lo que
+// hace que el descubrimiento funcione en un viaje de ida y vuelta en vez de
+// depender de que el otro lado tambien nos desconozca.
+void enviarNodeInfo(bool pedir_respuesta) {
   proto::User u;
   proto::idDesdeNodeNum(g_nodo, u.id, sizeof(u.id));
   snprintf(u.largo, sizeof(u.largo), "%s", store::config().nombre_largo);
@@ -91,7 +101,7 @@ void enviarNodeInfo() {
 
   uint8_t b[128];
   const size_t n = proto::codificarUser(u, b, sizeof(b));
-  if (n) transmitir(PORTNUM_NODEINFO, b, n, true);
+  if (n) transmitir(PORTNUM_NODEINFO, b, n, true, pedir_respuesta);
 }
 
 void enviarTelemetria() {
@@ -205,25 +215,55 @@ void recibirTexto(uint32_t de, const char* txt, int16_t rssi, float snr) {
   }
 }
 
+// Para la traza de consola: sin esto, "RX de 130C9A3C" no dice si lo que llego
+// fue un nombre, una posicion o un mensaje, que es justo lo que hace falta saber
+// cuando la lista de nodos no se puebla.
+const char* portnumNombre(uint32_t p) {
+  switch (p) {
+    case PORTNUM_TEXT_MESSAGE: return "TEXTO";
+    case PORTNUM_POSITION:     return "POSICION";
+    case PORTNUM_NODEINFO:     return "NODEINFO";
+    case PORTNUM_ROUTING:      return "ROUTING";
+    case PORTNUM_TELEMETRY:    return "TELEMETRIA";
+    default:                   return "?";
+  }
+}
+
 void procesarEntrega(const proto::Cabecera& c, const radio::Paquete& p) {
   proto::Cabecera c2;
   proto::Data d;
-  if (!proto::analizarPaquete(p.datos, p.len, clave(), claveLen(), &c2, &d)) return;
+  if (!proto::analizarPaquete(p.datos, p.len, clave(), claveLen(), &c2, &d)) {
+    // Importa distinguirlo: un paquete que se oye pero no descifra NO registra
+    // el nodo, asi que desaparece de la lista sin dejar rastro.
+    Serial.printf("   ...de %08X NO DESCIFRA (clave o canal distinto)\n",
+                  (unsigned)c.from);
+    return;
+  }
 
   // Un paquete malformado o ajeno puede traer hop_start < hop_limit; sin la
   // salvaguarda saldria un numero de saltos absurdo en la lista de nodos.
   const uint8_t saltos = (c.hop_start >= c.hop_limit)
                              ? (uint8_t)(c.hop_start - c.hop_limit) : 0;
   mesh::Nodo* nodo = g_nodos.visto(c.from, millis(), p.rssi, (int8_t)p.snr, saltos);
+  Serial.printf("   ...%s de %08X, nodos en tabla: %u\n",
+                portnumNombre(d.portnum), (unsigned)c.from,
+                (unsigned)g_nodos.total());
 
   // Si oimos a alguien de quien aun no sabemos el nombre, adelantamos NUESTRO
-  // NODEINFO. Sin esto, un nodo que arranque mas tarde que los demas se pierde
-  // la presentacion inicial (que sale a los 5 s) y se queda mostrando un numero
-  // hexadecimal hasta el siguiente envio periodico, 15 minutos despues.
+  // NODEINFO **pidiendo respuesta**.
+  //
+  // Lo de "pidiendo respuesta" es la parte importante, y antes faltaba: sin ella
+  // esto solo anunciaba nuestro nombre, que no es lo que nos hace falta. Si el
+  // otro lado ya nos conocia, su propia regla no se disparaba, se quedaba callado
+  // y nosotros seguiamos viendo un numero hexadecimal hasta su siguiente envio
+  // periodico, 15 minutos despues. Ocurria siempre que un nodo se reiniciaba
+  // mientras el otro seguia encendido.
+  //
   // El retardo aleatorio evita que varios nodos contesten a la vez.
   if (nodo && !nodo->corto[0] &&
       (int32_t)(g_prox_nodeinfo - millis()) > 8000) {
-    g_prox_nodeinfo = millis() + 2000 + (esp_random() % 4000);
+    g_prox_nodeinfo  = millis() + 2000 + (esp_random() % 4000);
+    g_nodeinfo_pide  = true;
   }
 
   switch (d.portnum) {
@@ -240,6 +280,14 @@ void procesarEntrega(const proto::Cabecera& c, const radio::Paquete& p) {
       proto::User u;
       if (proto::decodificarUser(d.payload, d.payload_len, &u))
         g_nodos.ponerNombres(c.from, u.largo, u.corto);
+
+      // Nos han preguntado quienes somos: contestamos. Con want_response a
+      // FALSE, o los dos nodos se contestarian el uno al otro para siempre.
+      if (d.want_response &&
+          (int32_t)(g_prox_nodeinfo - millis()) > 8000) {
+        g_prox_nodeinfo = millis() + 2000 + (esp_random() % 4000);
+        g_nodeinfo_pide = false;
+      }
       break;
     }
     case PORTNUM_POSITION: {
@@ -266,7 +314,12 @@ void procesarEntrega(const proto::Cabecera& c, const radio::Paquete& p) {
 void begin(uint32_t node_num) {
   g_nodo = node_num;
   recargarCanal();
-  g_prox_nodeinfo  = millis() + 5000;    // presentarse pronto tras arrancar
+  // Presentarse pronto tras arrancar, y PIDIENDO RESPUESTA: la tabla de nodos
+  // vive en RAM, asi que al reiniciar se pierde y hay que volver a preguntar
+  // quien anda por ahi. Sin esto, un nodo recien arrancado se queda sin ver a
+  // nadie hasta que a otro le toque su envio periodico, hasta 15 minutos.
+  g_prox_nodeinfo  = millis() + 5000;
+  g_nodeinfo_pide  = true;
   g_prox_telemetry = millis() + 30000;
 }
 
@@ -366,7 +419,11 @@ void loop() {
 
   // --- envios periodicos, todos marcados como automaticos ---
   if ((int32_t)(ahora - g_prox_nodeinfo) >= 0) {
-    enviarNodeInfo();
+    enviarNodeInfo(g_nodeinfo_pide);
+    // El periodico de cada 15 min no pide respuesta: seria pedirle a los cuatro
+    // nodos que contesten cada cuarto de hora sin motivo. Solo piden respuesta
+    // el del arranque y el que dispara oir a un desconocido.
+    g_nodeinfo_pide = false;
     g_prox_nodeinfo = ahora + NODEINFO_INTERVAL_MS;
   }
   if ((int32_t)(ahora - g_prox_telemetry) >= 0) {

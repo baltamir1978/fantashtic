@@ -278,6 +278,7 @@ Reglas de dependencia:
 | Cuelgue en el primer dibujo | `auto& D = M5Cardputer.Display` a nivel de fichero: orden de inicialización entre unidades de traducción |
 | No se retransmite nada | Filtrar por "¿es para mí?" en el router: en un broadcast es cierto |
 | El estado de entrega va al mensaje anterior | `recordarIdPaquete()` marca el **último** del buffer: hay que llamarlo DESPUÉS de `anadirMensaje()` |
+| La pantalla de nodos dice "no se ve a nadie" hasta que alguien manda un mensaje, y entonces sale el número y no el nombre | El descubrimiento estaba **al revés**: al oír a un desconocido se anunciaba el nombre PROPIO, cuando lo que hace falta es pedir el del otro. Si el otro lado ya te conocía, su regla no se disparaba y se quedaba callado. Pasaba siempre que un nodo se reiniciaba con el otro encendido (la tabla de nodos vive en RAM). Arreglado con `Data.want_response` (campo 3 de `mesh.proto`): el NODEINFO del arranque y el que dispara oír a un desconocido lo piden, y quien lo recibe contesta con el suyo **sin** pedirla, o serían dos nodos contestándose para siempre |
 | El SOS se corta tras un envío | Cualquier mensaje entrante lo cancelaba; ahora exige completar la ráfaga |
 | Brillo o volumen se desploman al segundo toque | Desbordamiento de `uint8_t`: 90+20 = 110 → `110*255/100` = 280 → 24 |
 | Coordenadas absurdas | `latitude_i` es **sfixed32**, no varint |

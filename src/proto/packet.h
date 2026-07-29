@@ -39,16 +39,31 @@ void empaquetarCabecera(const Cabecera& c, uint8_t out[16]);
 bool desempaquetarCabecera(const uint8_t in[16], Cabecera* c);
 
 // --- mensaje Data ------------------------------------------------------------
-// Solo se implementan los dos campos que necesita un mensaje de texto:
-//   campo 1  portnum  varint
-//   campo 2  payload  bytes (max 233)
+// Solo se implementan los tres campos que hacen falta:
+//   campo 1  portnum        varint
+//   campo 2  payload        bytes (max 233)
+//   campo 3  want_response  varint (bool)
 // El analizador salta correctamente cualquier otro campo, incluidos los
 // fixed32 (dest, source, request_id, reply_id, emoji), que NO son varint.
+//
+// Se escriben en orden ascendente de numero de campo, que es lo que hace el
+// nanopb de Meshtastic: 1, luego 2, luego 3.
 
 struct Data {
   uint32_t portnum = 0;
   uint8_t  payload[233] = {};
   size_t   payload_len = 0;
+
+  // campo 3, varint: want_response (mesh.proto, message Data)
+  //
+  // "Contesta a esto." Lo usa el descubrimiento de nodos: un NODEINFO con esto
+  // puesto significa "aqui estoy, y tu quien eres", y el que lo recibe devuelve
+  // el suyo. Sin este campo el descubrimiento solo funciona por casualidad,
+  // cuando los dos lados se desconocen a la vez.
+  //
+  // Se codifica SOLO si es true: proto3 omite los valores por defecto, asi que
+  // los vectores de docs/VECTORES.md siguen saliendo byte a byte iguales.
+  bool     want_response = false;
 };
 
 // Devuelve los bytes escritos, o 0 si no cabe.
