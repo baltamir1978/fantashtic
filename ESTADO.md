@@ -115,8 +115,9 @@ Verificado de paso, todo en el aire real y entre dos aparatos independientes:
 - **ACK implícito**: el emisor se oye retransmitido y el contador de saltos sube 0 → 1.
 - **SNR 6,2-7,0**, coherente.
 
-Pendiente menor: probar el sentido contrario (mensaje originado en `130C9A3C`), aunque el
-camino de vuelta ya está demostrado por el ACK implícito.
+**El sentido contrario también queda verificado** (misma noche, tras el flasheo final): en la
+consola del nodo 1 aparece `RX de 130C9A3C ... saltos 0/3 -> entregar y retransmitir`, o sea
+un mensaje **originado** en el nodo 2 y recibido de primera mano. Deuda cerrada.
 
 ### ✅ Segunda unidad: el expansor tampoco está (29-jul)
 
@@ -243,12 +244,15 @@ Agotado el software, la sospecha es el contacto o la alimentación del Cap:
 - Escanear **sin** el Cap: debe seguir saliendo exactamente 0x18 / 0x34 / 0x69. Si sale
   algo distinto, el Cap sí está tocando el bus y el problema es otro.
 
-**Mientras el expansor no conteste, no hay que forzar la transmisión de ninguna manera.**
-Si el conmutador de antena está en el camino de RF y no se habilita, transmitir mete la
-potencia contra un circuito abierto y se lleva el amplificador del SX1262. Que Meshtastic
-no toque el expansor (su `variant.h` solo define `SX126X_DIO2_AS_RF_SWITCH`) es una pista
-de que quizá no haga falta, pero **una pista no es permiso**: hay que resolver primero
-por qué no responde.
+> **Resuelto por medida, no por analogía.** Este párrafo decía que sin el expansor no había
+> que transmitir de ninguna manera, porque la potencia podía ir contra un circuito abierto y
+> llevarse el amplificador. El razonamiento era correcto como precaución, pero la prueba nº 4
+> lo zanjó: **−18 dBm a corta distancia entre dos aparatos**, muy por encima del criterio de
+> −40 dBm fijado de antemano. Sale potencia real por el RP-SMA sin el expansor, así que
+> DIO2 del SX1262 gobierna el TX/RX él solo y el conmutador no está en el camino de RF.
+>
+> Lo que queda por comprobar es físico y de curiosidad, no de seguridad: reasentar el Cap y
+> mirar si necesita los 5 V del conector (`5V_IN` pin 7, `5V_OUT` pin 5).
 
 ---
 
@@ -329,32 +333,24 @@ Verificado de verdad, ejecutando código:
 - Haversine contra distancias reales (Madrid–Barcelona con < 600 m de error).
 - Truncado de UTF-8 sin partir caracteres, con acentos y emoji.
 
-Sin ejecutar nunca: pantallas, teclado, GPS, microSD, radio, y la integración de todo.
+Ejecutado en el aparato el 29-jul: pantalla, teclado, microSD, NVS, GPS (fix con 24-25
+satélites y HDOP 0,6), radio, cifrado en el aire, router y ACK implícito en los dos sentidos.
+
+Sigue sin ejecutar: la interoperabilidad con un nodo Meshtastic oficial, la retransmisión con
+tres aparatos, el SOS de punta a punta y las pruebas de exterior.
 
 ---
 
-## Lo primero: desbloquear la radio
+## ~~Lo primero: desbloquear la radio~~ — RESUELTO
 
-`include/config.h` tiene:
-
-```c
-#define I2C_ADDR_ANTSW    0xFF   // <-- SIN CONFIGURAR
-```
-
-Con ese valor el firmware arranca directo a la pantalla de error. **Es deliberado**: sin
-verificar el conmutador de antena, transmitir destruiría el amplificador.
-
-Procedimiento:
-
-1. `pio run -t upload` y abre la consola (`pio device monitor -b 115200`).
-2. El firmware imprime el escaneo del bus I²C al arrancar. Anota las direcciones.
-3. **Apaga, quita el Cap LoRa, enciende y vuelve a escanear.** La dirección que desaparece es
-   el PI4IOE5V6408. Candidata más probable: `0x43`.
-4. Pon ese valor en `I2C_ADDR_ANTSW`, recompila y vuelve a flashear.
-5. Ahora debería llegar a la pantalla de antena. **Antena atornillada antes de encender.**
-
-Si el escaneo no encuentra nada, el problema es el bus, no el Cap: sin I²C tampoco hay
-teclado.
+> **Histórico.** Esta sección describía el bloqueo por `I2C_ADDR_ANTSW = 0xFF` y el
+> procedimiento para averiguar la dirección del expansor. **Ya no aplica**: la dirección es
+> `0x43` (confirmada en la documentación de M5), el expansor **no responde** en ninguna
+> configuración, y la restricción nº 2 se relajó a "avisar y continuar". La radio arranca y
+> transmite, medido a −18 dBm. Se deja la constancia arriba, en la sección del expansor.
+>
+> Lo que **sigue vigente**: atornillar la antena antes de dar corriente, y la confirmación
+> en pantalla antes del primer TX.
 
 ---
 
@@ -437,9 +433,14 @@ Predicciones, para no perder tiempo:
 1. Quitar la clave provisional: el asistente ya deriva la clave real de la frase, pero
    conviene comprobar que ninguna ruta usa todavía una constante fija.
 2. Ajustes: las filas Nombre, Nombre corto, Avanzado e Información no hacen nada.
-3. `pantallaNodos()` dibuja 8 filas pero permite seleccionar 16. Falta scroll.
+3. ~~`pantallaNodos()` dibuja 8 filas pero permite seleccionar 16. Falta scroll.~~
+   **Hecho**: ventana deslizante compartida con ajustes, con contador en el pie.
 4. Medir consumo real y decidir si hace falta recepción cíclica del SX1262.
-5. Actualizar `Memoria_tecnica_Fantashtic.docx` con los resultados de campo.
+5. Actualizar `Memoria_tecnica_Fantashtic.docx` con los resultados de campo. Sigue diciendo
+   "fases 0 y 1 completadas", y ya está todo escrito y probado en dos nodos.
+6. **Subir las iteraciones de PBKDF2.** 20 000 son pocas para una frase corta. Ojo: cambiarlo
+   invalida las claves ya guardadas en NVS, así que hay que repasar la frase en todos los
+   nodos a la vez. Mismo problema que cambiar la sal.
 
 ---
 
