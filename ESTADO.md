@@ -298,6 +298,24 @@ Solo se puede comprobar con los ojos:
   ya no está recortado.
 - **Brújula**: que el nombre de la cabecera no toque el círculo de la flecha.
 
+Y de la segunda tanda (preferencias editables, sin probar en el aparato):
+
+- **Nombre y nombre corto**: cambiarlos y comprobar que el nuevo aparece en el chat del OTRO
+  aparato en segundos, no a los 15 minutos (es lo que hace `app::anunciarNombre()`).
+- **Nombre corto**: que salga en mayúsculas aunque se teclee en minúsculas, y que el tope de
+  4 caracteres pite en vez de dejar seguir.
+- **Editor con texto largo**: escribir una frase de 60 caracteres y comprobar que la caja
+  muestra **el final** y no el principio (`colaQueCabe()`), y que no se sale del recuadro.
+- **Frase del grupo**: entrar, ver que el editor sale **vacío** (no se precarga: no se
+  guarda), que ENTER lleva a la confirmación y que ESC en la confirmación **vuelve al editor**
+  sin perder lo escrito. Y que al confirmar sale "Generando la clave..." antes de bloquearse.
+- **La prueba de verdad de la frase**: cambiarla en un solo aparato y comprobar que dejan de
+  verse; cambiarla en el otro con la misma frase y que vuelven a hablarse. Es la prueba 9.
+- **Información**: nueve filas en Font0, que quepan sin pisar el pie, y que ESC salga a
+  ajustes en vez de al chat.
+- **Brillo y volumen**: que la escala vaya 1→5 y dé la vuelta a 1, y que el nivel 1 de brillo
+  siga siendo legible a la luz del día.
+
 ---
 
 ## Qué está hecho
@@ -336,8 +354,9 @@ Verificado de verdad, ejecutando código:
 Ejecutado en el aparato el 29-jul: pantalla, teclado, microSD, NVS, GPS (fix con 24-25
 satélites y HDOP 0,6), radio, cifrado en el aire, router y ACK implícito en los dos sentidos.
 
-Sigue sin ejecutar: la interoperabilidad con un nodo Meshtastic oficial, la retransmisión con
-tres aparatos, el SOS de punta a punta y las pruebas de exterior.
+Sigue sin ejecutar: la retransmisión con tres aparatos, el SOS de punta a punta y las pruebas
+de exterior. (Contrastar contra un nodo Meshtastic oficial **no** está en esa lista: nunca fue
+un requisito, solo una herramienta de depuración por si el protocolo diera problemas.)
 
 ---
 
@@ -377,15 +396,20 @@ Mensajes de un aparato a otro. Anotar RSSI y SNR a 1 m: la referencia esperada e
 −40 dBm y SNR entre +8 y +10. Si a corta distancia sale peor que −70 dBm, sospechar del
 conmutador de antena.
 
-### 5. ⭐ Interoperabilidad — la prueba que decide
-Deja el segundo Cardputer con **firmware Meshtastic oficial**: región EU_868, preset
-LongFast, canal por defecto. En el nodo con Fantashtic, entra en la pantalla de canal y pulsa
-`M` para pasar al modo interoperable.
+### 5. Interoperabilidad con Meshtastic — OPCIONAL, solo para depurar
+**No es un requisito del proyecto y nunca lo fue.** Este apartado decía "la prueba que
+decide", y eso era un error de encuadre: Fantashtic es un grupo cerrado con su propia clave,
+no un nodo de la red pública. La fidelidad de byte del formato de paquete es una decisión de
+método —permite contrastar con vectores conocidos—, no un objetivo.
 
-**El nodo con firmware oficial debe mostrar en pantalla los mensajes que escribas.**
+Queda aquí como **herramienta**, por si algún día el protocolo da un problema que no se pueda
+aislar de otra forma: dejar un segundo Cardputer con firmware Meshtastic oficial (EU_868,
+LongFast, canal por defecto) y pasar el nodo Fantashtic al modo interoperable. Si el nodo
+oficial ve los mensajes, el protocolo está bien; si no, el orden de depuración está en
+`docs/VECTORES.md` §"Orden de depuración recomendado".
 
-Si los ve, el protocolo es correcto y todo lo demás son detalles. Si no los ve, el orden de
-depuración está en `docs/VECTORES.md` §"Orden de depuración recomendado".
+A día de hoy el protocolo ya está validado por dos caminos independientes: vectores contra
+`pycryptodome` en el ordenador, y dos aparatos entendiéndose en el aire.
 
 ### 6. Relevo (necesita el tercer aparato)
 La única prueba que **no se puede hacer con dos**. Separar A y C hasta que no se oigan, poner
@@ -397,7 +421,8 @@ En exterior. Contrastar la distancia mostrada contra Google Maps en dos puntos s
 ≥ 500 m. Recordar que en parado no hay rumbo real: el BMI270 no es magnetómetro.
 
 ### 8. Emergencia
-Mantener el botón lateral 2 s desde cada pantalla. Comprobar que despierta al receptor con la
+Mantener el botón **G0** (el del módulo StampS3A, el del modo descarga: **no hay botón en el
+chasis**) 2 s desde cada pantalla. Comprobar que despierta al receptor con la
 pantalla apagada, que suena la alarma, que "Voy hacia ti" funciona a un toque, y **que una
 pulsación corta cancela un SOS propio ya lanzado**.
 
@@ -432,7 +457,11 @@ Predicciones, para no perder tiempo:
 
 1. Quitar la clave provisional: el asistente ya deriva la clave real de la frase, pero
    conviene comprobar que ninguna ruta usa todavía una constante fija.
-2. Ajustes: las filas Nombre, Nombre corto, Avanzado e Información no hacen nada.
+2. ~~Ajustes: las filas Nombre, Nombre corto, Avanzado e Información no hacen nada.~~
+   **Hecho**: editor de texto para Nombre, Nombre corto y Frase del grupo (esta última con
+   confirmación), pantalla de Información de solo lectura, y brillo y volumen en escala 1-5
+   en vez de porcentaje y unidades crudas. "Avanzado" se quitó: no prometía nada concreto.
+   Queda sin interfaz el restablecimiento de fábrica, y preset/potencia/saltos.
 3. ~~`pantallaNodos()` dibuja 8 filas pero permite seleccionar 16. Falta scroll.~~
    **Hecho**: ventana deslizante compartida con ajustes, con contador en el pie.
 4. Medir consumo real y decidir si hace falta recepción cíclica del SX1262.
@@ -441,6 +470,13 @@ Predicciones, para no perder tiempo:
 6. **Subir las iteraciones de PBKDF2.** 20 000 son pocas para una frase corta. Ojo: cambiarlo
    invalida las claves ya guardadas en NVS, así que hay que repasar la frase en todos los
    nodos a la vez. Mismo problema que cambiar la sal.
+7. **El disparador del SOS es el botón G0 y eso está mal.** No hay botón dedicado en el
+   chasis: `BtnA` es GPIO 0, el botón del módulo StampS3A, el mismo del modo descarga.
+   Dos problemas: es pequeño y pensado para el arranque, no para una emergencia; y
+   mantenerlo pulsado **mientras se enciende** el aparato mete al ESP32-S3 en modo descarga
+   con la pantalla apagada, o sea que parece averiado. Con niños, eso es la ruta fácil hacia
+   un estado roto que prohíbe la restricción nº 8. Hace falta **además** un atajo de teclado
+   para el SOS. El botón puede quedarse como secundario.
 
 ---
 

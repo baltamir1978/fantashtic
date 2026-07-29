@@ -89,8 +89,8 @@ void begin() {
   g_cfg.preset     = g_nvs.getUChar("preset", 0);
   g_cfg.tx_dbm     = g_nvs.getUChar("txpwr", RF_TX_POWER_DBM);
   g_cfg.hop_limit  = g_nvs.getUChar("hoplim", HOP_DEFAULT);
-  g_cfg.brillo     = g_nvs.getUChar("bright", 70);
-  g_cfg.volumen    = g_nvs.getUChar("vol", 160);
+  g_cfg.brillo     = g_nvs.getUChar("bright", 60);   // nivel 3 de 5
+  g_cfg.volumen    = g_nvs.getUChar("vol", 150);     // nivel 3 de 5
   g_cfg.gps_activo = g_nvs.getBool("gpson", true);
   g_cfg.antena_ok  = g_nvs.getBool("antok", false);
 

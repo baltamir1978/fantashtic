@@ -122,7 +122,14 @@
 // =============================================================================
 //  VARIOS
 // =============================================================================
-#define PIN_BUTTON         0    // pulsacion larga = SOS
+// Boton G0 del modulo StampS3A. NO hay boton dedicado en el chasis, y es el
+// mismo que se usa para entrar en modo descarga.
+//
+// Esta constante NO se lee en ningun sitio: el codigo va por M5Cardputer.BtnA,
+// que M5Unified asocia a este mismo GPIO (M5Unified.cpp agrupa
+// board_M5CardputerADV con board_M5StampS3). Se deja documentado porque la regla
+// del proyecto es que todos los pines vivan aqui.
+#define PIN_BUTTON         0    // pulsacion larga = SOS, corta = cancelar
 #define PIN_BATTERY       10
 #define BAT_MULTIPLIER    2.0f  // divisor 100k+100k. variant.h usa 2*1.02, pero
                                 // ese 1.02 es un fudge para mostrar "cargando"
@@ -254,6 +261,17 @@
 #define UI_FOOTER_H           11   // banda del pie (ayuda o aviso), en Font0
 #define UI_ROW_H              20   // fila de chat o de lista con Font2 (16 px)
 #define BAT_LOW_PCT           15
+
+// Brillo y volumen se ajustan en una escala de 1 a 5, no en unidades crudas.
+// "Volumen 180" sobre 255 no le dice nada a nadie, y menos a un nino; y el
+// brillo en porcentaje solo tenia 5 valores utiles, asi que era una escala de 5
+// disfrazada. En NVS se sigue guardando el valor REAL (porcentaje y 0-255) y el
+// nivel se deriva al vuelo, para no tener que migrar la config que ya existe.
+#define UI_NIVELES             5
+#define BRILLO_MIN_PCT        20   // el nivel 1 tiene que seguir siendo legible
+#define BRILLO_MAX_PCT       100
+#define VOLUMEN_MIN           60   // sin silencio: la alarma del SOS debe oirse
+#define VOLUMEN_MAX          240
 
 enum ft_screen_t {
   SCR_CHAT = 0,

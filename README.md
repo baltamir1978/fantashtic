@@ -13,13 +13,17 @@ que no se pueda salir, el SOS siempre cancelable y la letra grande.
 - Botón de SOS con posición GPS y alarma que despierta la pantalla del receptor
 - Brújula que apunta a cualquier nodo del grupo
 - Historial en microSD, legible en cualquier ordenador
-- Compatible en el aire con **Meshtastic**: mismo formato de paquete, así que un nodo con
-  firmware oficial puede retransmitir y sirve para depurar
 
 **No es** un fork de `meshtastic/firmware`. No arrastra su código, ni MQTT, ni Bluetooth, ni
-la app móvil, ni el API de protobufs por serie. Reimplementa el protocolo de radio con
-fidelidad de byte, y nada más. **Tampoco es** un nodo de la red pública Meshtastic: usa un
-canal privado con clave propia.
+la app móvil, ni el API de protobufs por serie. **Tampoco es** un nodo de la red pública
+Meshtastic: usa un canal privado con clave propia.
+
+El formato de paquete que va por el aire —cabecera de 16 bytes, AES-CTR, encaminamiento por
+inundación— sí es el de Meshtastic, reimplementado con fidelidad de byte. Eso es una decisión
+de **método, no un objetivo**: permite contrastar la implementación contra vectores conocidos
+y, si algún día hace falta, depurar con un nodo de firmware oficial en la mesa. La
+interoperabilidad con Meshtastic **nunca fue un requisito** y no se promete: es un grupo
+cerrado con su propia clave.
 
 ---
 
@@ -114,7 +118,7 @@ por comodidad, sin necesidad de Fn.
 | `Tab` | cambiar de pantalla |
 | `Enter` | enviar / elegir |
 | `Backspace` | borrar |
-| Botón lateral, **2 segundos** | **SOS** |
+| Botón **G0**, 2 segundos | **SOS** (ver el aviso de abajo) |
 
 Los caracteres `;` `.` `,` `/` sin Fn se escriben con normalidad.
 
@@ -159,12 +163,35 @@ verdad al nodo. Parado, la flecha apunta al **norte geográfico** y lo dice en p
 
 ### Ajustes
 
-`↑` `↓` para moverse, `Enter` para actuar. Brillo sube de 20 en 20 y da la vuelta; volumen de
-60 en 60; GPS se enciende y se apaga.
+`↑` `↓` para moverse, `Enter` para actuar. Siete filas, todas funcionales:
 
-> Las filas **Nombre**, **Nombre corto**, **Avanzado** e **Información** están dibujadas pero
-> todavía no hacen nada al pulsar `Enter`. Hoy el nombre solo se puede fijar en el asistente
-> de primer arranque.
+| Fila | Qué hace `Enter` |
+|---|---|
+| **Nombre del nodo** | abre el editor de texto, hasta 15 letras |
+| **Nombre corto** | abre el editor, 4 letras, siempre en mayúsculas |
+| **Brillo** | sube un nivel de **1 a 5** y da la vuelta |
+| **Volumen** | sube un nivel de **1 a 5** y da la vuelta, con un pitido para oírlo |
+| **GPS** | enciende y apaga |
+| **Frase del grupo** | abre el editor, **y pide confirmación** (en naranja) |
+| **Información** | pantalla de solo lectura; `ESC` para salir |
+
+Brillo y volumen van en una escala de **1 a 5**, no en unidades crudas: «volumen 180» sobre
+255 no le dice nada a nadie, y menos a un niño. Por dentro se sigue guardando el valor real,
+así que no hace falta migrar nada de lo ya configurado.
+
+**El editor de texto**: escribes, `Backspace` borra, `Enter` guarda y `ESC` cancela sin
+guardar. Precarga el valor actual, para que cambiar una letra no obligue a reescribirlo todo.
+El contador de la derecha cuenta **bytes**, que es el límite real del campo.
+
+Al cambiar cualquiera de los dos nombres se adelanta el envío del `NODEINFO`, para que los
+demás vean el nombre nuevo en segundos en vez de esperar hasta 15 minutos.
+
+> **La frase del grupo es la única ruta destructiva de los ajustes**, y por eso va en naranja
+> y detrás de una pantalla de confirmación: cambiarla en un solo aparato lo deja incomunicado
+> del resto hasta que la cambies en todos. La frase **no se precarga en el editor** porque no
+> se guarda en ninguna parte — en NVS solo está la clave derivada. La fila muestra el nombre
+> del canal (p. ej. `FT-6BJHH`), que sale de la propia frase: sirve para comprobar de un
+> vistazo que dos aparatos están en el mismo grupo sin enseñar la frase a nadie.
 
 ### Barra de estado
 
@@ -176,8 +203,20 @@ del GPS, `SD?` si no hay tarjeta, y batería.
 
 ## SOS
 
-Mantener el botón lateral **2 segundos** desde cualquier pantalla. Sale una cuenta atrás de
+Mantener el botón **G0 2 segundos** desde cualquier pantalla. Sale una cuenta atrás de
 3 segundos: `Enter` lo envía ya, `ESC` lo cancela.
+
+> **G0 es el botón del propio módulo StampS3A, el mismo que se usa para entrar en modo
+> descarga.** No hay ningún botón dedicado en el chasis. En el código es
+> `M5Cardputer.BtnA`, que M5Unified asocia a GPIO 0 en esta placa
+> (`M5Unified.cpp`, `board_M5CardputerADV` va junto a `board_M5StampS3`).
+>
+> **Esto es una mala elección para un disparador de emergencia y está pendiente de
+> cambiar**, por dos razones: es un botón pequeño y pensado para el arranque, no para
+> pulsarlo con prisa o con guantes; y si se mantiene pulsado **mientras se enciende** el
+> aparato, el ESP32-S3 entra en modo descarga y la pantalla se queda apagada, o sea que
+> parece averiado. Para un aparato que van a usar niños eso es exactamente la clase de ruta
+> fácil hacia un estado roto que el proyecto se prohíbe.
 
 Una vez lanzado se manda una ráfaga de 3 envíos separados 30 segundos, y después se repite
 cada 5 minutos hasta un máximo de una hora. Una pulsación corta del botón cancela un SOS
@@ -255,13 +294,16 @@ de Meshtastic, contrastado contra vectores generados con `pycryptodome`.
 
 Lo que **no** está verificado todavía:
 
-- **Interoperabilidad con un nodo Meshtastic oficial.** Es la prueba que decide si el
-  protocolo está bien de verdad, y aún no se ha hecho.
-- **Retransmisión con tres aparatos**, la única que no se puede probar con dos.
+- **Retransmisión con tres aparatos**, la única que no se puede probar con dos. Es la que
+  falta de verdad: es una función del producto, no una comprobación de laboratorio.
 - **GPS y brújula en exterior**, contrastando distancias contra un mapa.
 - **SOS de punta a punta** y cambio de frase del grupo en caliente.
 - **Autonomía.** No hay light sleep y el SX1262 está en recepción continua.
 - La geometría de las pantallas está calculada, no vista en todos los casos límite.
+
+*(Contrastar contra un nodo Meshtastic oficial sigue estando disponible como herramienta de
+depuración si algo del protocolo da problemas, pero no es un objetivo pendiente: el protocolo
+ya está validado con vectores en el ordenador y con dos aparatos hablándose en el aire.)*
 
 Detalle de qué falta y en qué orden probarlo, en `ESTADO.md`.
 
@@ -272,7 +314,7 @@ Detalle de qué falta y en qué orden probarlo, en `ESTADO.md`.
 - [x] 6 — chat e interfaz · [x] 7 — nodos, `NODEINFO` y telemetría
 - [x] 8 — GPS, posición y brújula · [x] 9 — emergencia
 - [x] 10 — ajustes y asistente de primer arranque
-- [ ] 11 — acabado, tras la prueba de interoperabilidad
+- [ ] 11 — acabado, tras las pruebas de campo con tres aparatos
 
 ---
 

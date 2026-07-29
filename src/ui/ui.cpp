@@ -8,6 +8,7 @@
 
 #include "app/app.h"
 #include "config.h"
+#include "hal/antenna.h"
 #include "hal/gps.h"
 #include "hal/power.h"
 #include "hal/sound.h"
@@ -55,6 +56,20 @@ char g_aviso[40] = {};
 
 // Asistente de primer arranque.
 int  g_paso_asistente = 0;   // 0 nombre, 1 frase, 2 derivando
+
+// --- edicion de los ajustes -------------------------------------------------
+// Campo que se esta editando, o NINGUNO. Mientras haya campo abierto, el editor
+// se come todas las teclas y se pinta por encima de la pantalla de ajustes.
+enum class Campo : uint8_t { NINGUNO = 0, NOMBRE, CORTO, FRASE };
+Campo g_campo       = Campo::NINGUNO;
+bool  g_confirmando = false;   // solo la frase: es destructiva
+bool  g_derivando   = false;   // PBKDF2 bloquea ~0,5 s y hay que avisar antes
+char  g_edit[65]    = {};      // la frase admite 64 bytes; los nombres, menos
+int   g_edit_n      = 0;
+
+// Pantalla de informacion. NO entra en la rotacion del TAB: se abre desde
+// ajustes y se sale con ESC. Anadirla a ft_screen_t la habria metido en el ciclo.
+bool g_info = false;
 
 // ---------------------------------------------------------------------------
 
@@ -419,12 +434,43 @@ void pantallaBrujula() {
 
 // ------------------------------ ajustes ------------------------------------
 
+// Escala de 1 a UI_NIVELES para brillo y volumen. Se guarda el valor real y el
+// nivel se deriva, asi que no hay nada que migrar en NVS.
+//
+// De paso desaparece la trampa del desbordamiento: el valor se RECONSTRUYE desde
+// un nivel ya acotado, en vez de sumarle 20 o 60 a lo que hubiera. Sumando,
+// 90+20 = 110 -> 110*255/100 = 280, que como uint8_t es 24, y la pantalla se iba
+// casi a negro. Asi ya no se puede escribir ese fallo.
+int nivelDe(int valor, int minimo, int maximo) {
+  const int paso = (maximo - minimo) / (UI_NIVELES - 1);
+  int n = (valor - minimo + paso / 2) / paso + 1;
+  if (n < 1)          n = 1;
+  if (n > UI_NIVELES) n = UI_NIVELES;
+  return n;
+}
+
+int valorDe(int nivel, int minimo, int maximo) {
+  const int paso = (maximo - minimo) / (UI_NIVELES - 1);
+  return minimo + (nivel - 1) * paso;
+}
+
+// Rueda: del ultimo nivel se vuelve al primero.
+int siguienteNivel(int nivel) { return nivel >= UI_NIVELES ? 1 : nivel + 1; }
+
 struct Opcion { const char* etiqueta; };
+// El orden importa: los indices se usan en el manejador de ENTER. "Avanzado"
+// desaparece -- era una fila que no hacia nada y no prometia nada concreto -- y
+// en su sitio va la frase del grupo, que es lo unico realmente delicado de aqui.
 const Opcion OPCIONES[] = {
     {S_SET_NOMBRE}, {S_SET_CORTO}, {S_SET_BRILLO}, {S_SET_VOLUMEN},
-    {S_SET_GPS}, {S_SET_AVANZADO}, {S_SET_INFO},
+    {S_SET_GPS}, {S_SET_FRASE}, {S_SET_INFO},
 };
 constexpr int N_OPCIONES = sizeof(OPCIONES) / sizeof(OPCIONES[0]);
+
+// Indices, para no repartir numeros magicos por el manejador de teclas.
+enum {
+  OPT_NOMBRE = 0, OPT_CORTO, OPT_BRILLO, OPT_VOLUMEN, OPT_GPS, OPT_FRASE, OPT_INFO
+};
 
 void pantallaAjustes() {
   barraEstado();
@@ -444,9 +490,11 @@ void pantallaAjustes() {
     const int cy = y + dy / 2;
     if (i == g_sel) D.fillRect(0, y, TFT_W, dy, 0x1082);
 
-    const bool avanzado = (i == 5);
+    // La frase en naranja: es la unica fila de aqui que puede dejar el aparato
+    // incomunicado, y conviene que se vea distinta antes de pulsarla.
+    const bool delicada = (i == OPT_FRASE);
     D.setTextDatum(middle_left);
-    D.setTextColor(avanzado ? TFT_ORANGE : TFT_WHITE);
+    D.setTextColor(delicada ? TFT_ORANGE : TFT_WHITE);
     D.drawString(OPCIONES[i].etiqueta, 6, cy);
     const int x_fin = 6 + (int)D.textWidth(OPCIONES[i].etiqueta);
 
@@ -454,11 +502,17 @@ void pantallaAjustes() {
     switch (i) {
       case 0: snprintf(v, sizeof(v), "%s", c.nombre_largo); break;
       case 1: snprintf(v, sizeof(v), "%s", c.nombre_corto); break;
-      case 2: snprintf(v, sizeof(v), "%u%%", (unsigned)c.brillo); break;
-      case 3: snprintf(v, sizeof(v), "%u", (unsigned)c.volumen); break;
+      case 2: snprintf(v, sizeof(v), "%d/%d",
+                       nivelDe(c.brillo, BRILLO_MIN_PCT, BRILLO_MAX_PCT), UI_NIVELES); break;
+      case 3: snprintf(v, sizeof(v), "%d/%d",
+                       nivelDe(c.volumen, VOLUMEN_MIN, VOLUMEN_MAX), UI_NIVELES); break;
       case 4: snprintf(v, sizeof(v), "%s", c.gps_activo ? S_ACTIVADO : S_DESACTIVADO); break;
-      case 5: snprintf(v, sizeof(v), ">"); break;
-      case 6: snprintf(v, sizeof(v), "%08X", (unsigned)app::nodoPropio()); break;
+      // La frase NO se guarda en ningun sitio, solo la clave derivada, asi que
+      // aqui se muestra el nombre de canal: sale de la propia frase, y sirve
+      // para comprobar de un vistazo que dos aparatos estan en el mismo grupo
+      // sin ensenar la frase a nadie.
+      case 5: snprintf(v, sizeof(v), "%s", c.canal); break;
+      case 6: snprintf(v, sizeof(v), ">"); break;
       default: break;
     }
 
@@ -478,6 +532,172 @@ void pantallaAjustes() {
   }
 
   pieLista(S_K_FLECHAS "  " S_K_ENTER, g_sel, N_OPCIONES, visibles);
+  pieAviso();
+}
+
+// --------------------- edicion de ajustes: pantallas ------------------------
+
+int maxBytesCampo(Campo c) {
+  switch (c) {
+    case Campo::NOMBRE: return NODE_LONGNAME_LEN - 1;    // 15
+    case Campo::CORTO:  return NODE_SHORTNAME_LEN - 1;   // 4
+    case Campo::FRASE:  return (int)sizeof(g_edit) - 1;  // 64
+    default:            return 0;
+  }
+}
+
+const char* tituloCampo(Campo c) {
+  switch (c) {
+    case Campo::NOMBRE: return S_SET_NOMBRE;
+    case Campo::CORTO:  return S_SET_CORTO;
+    case Campo::FRASE:  return S_SET_FRASE;
+    default:            return "";
+  }
+}
+
+// Trozo FINAL de 's' que cabe en 'ancho' px con la fuente activa. Al escribir
+// interesa ver lo ultimo tecleado, no el principio: la frase admite 64
+// caracteres y en Font2 eso es mas del doble del ancho de la pantalla.
+const char* colaQueCabe(const char* s, int ancho) {
+  const char* p = s;
+  while (*p && (int)D.textWidth(p) > ancho) {
+    const uint8_t l = util::longitudCaracter((uint8_t)*p);
+    p += l ? l : 1;            // sin el '? :' un byte invalido cuelga el bucle
+  }
+  return p;
+}
+
+void pantallaEditor() {
+  D.fillScreen(TFT_BLACK);
+  D.setFont(&fonts::Font0);
+  D.setTextSize(1);
+
+  // Cabecera con el nombre del campo.
+  D.fillRect(0, 0, TFT_W, UI_STATUSBAR_H, 0x2104);
+  D.setTextDatum(middle_left);
+  D.setTextColor(g_campo == Campo::FRASE ? TFT_ORANGE : TFT_WHITE);
+  D.drawString(tituloCampo(g_campo), 4, UI_STATUSBAR_H / 2);
+  D.setTextDatum(top_left);
+
+  if (g_derivando) {
+    D.setFont(&fonts::Font2);
+    D.setTextDatum(middle_center);
+    D.setTextColor(TFT_WHITE);
+    D.drawString(S_DERIVANDO, TFT_W / 2, TFT_H / 2);
+    D.setTextDatum(top_left);
+    return;
+  }
+
+  // Ayuda de dos lineas, distinta por campo.
+  const char* a1 = "";
+  const char* a2 = "";
+  switch (g_campo) {
+    case Campo::NOMBRE: a1 = S_EDIT_NOMBRE_1; a2 = S_EDIT_NOMBRE_2; break;
+    case Campo::CORTO:  a1 = S_EDIT_CORTO_1;  a2 = S_EDIT_CORTO_2;  break;
+    case Campo::FRASE:  a1 = S_EDIT_FRASE_1;  a2 = S_EDIT_FRASE_2;  break;
+    default: break;
+  }
+  D.setTextColor(0x6B4D);
+  D.drawString(a1, 6, UI_STATUSBAR_H + 6);
+  D.drawString(a2, 6, UI_STATUSBAR_H + 18);
+
+  // Caja de entrada, en Font2 para que se lea de verdad.
+  const int caja_y = 56, caja_h = 26;
+  D.fillRect(4, caja_y, TFT_W - 8, caja_h, 0x2104);
+  D.drawRect(4, caja_y, TFT_W - 8, caja_h, 0x4208);
+  D.setFont(&fonts::Font2);
+  D.setTextColor(TFT_GREEN);
+  char cur[sizeof(g_edit) + 2];
+  snprintf(cur, sizeof(cur), "%s_", g_edit);
+  D.setTextDatum(middle_left);
+  D.drawString(colaQueCabe(cur, TFT_W - 24), 10, caja_y + caja_h / 2);
+  D.setTextDatum(top_left);
+
+  // Bytes usados de los que caben. Se cuentan BYTES, no caracteres: es el limite
+  // real del campo y de lo que va por radio.
+  D.setFont(&fonts::Font0);
+  char b[16];
+  snprintf(b, sizeof(b), "%d/%d", g_edit_n, maxBytesCampo(g_campo));
+  D.setTextDatum(top_right);
+  D.setTextColor(g_edit_n >= maxBytesCampo(g_campo) ? TFT_ORANGE : 0x6B4D);
+  D.drawString(b, TFT_W - 6, caja_y + caja_h + 4);
+  D.setTextDatum(top_left);
+
+  D.setTextColor(0x6B4D);
+  D.drawString(S_EDIT_GUARDAR, 6, TFT_H - 12);
+}
+
+// Confirmacion antes de cambiar la frase. Es la unica ruta destructiva de los
+// ajustes, y la restriccion nº 8 pide que no se llegue de un solo golpe.
+void pantallaConfirmar() {
+  D.fillScreen(0x3000);
+  D.setFont(&fonts::Font0);
+  D.setTextDatum(middle_center);
+
+  D.setTextSize(2);
+  D.setTextColor(TFT_WHITE);
+  D.drawString(S_SEGURO, TFT_W / 2, 24);
+  D.setTextSize(1);
+
+  D.setTextColor(0xFCE0);
+  D.drawString(S_AVISO_INCOMUN_1, TFT_W / 2, 54);
+  D.drawString(S_AVISO_INCOMUN_2, TFT_W / 2, 66);
+  D.drawString(S_AVISO_INCOMUN_3, TFT_W / 2, 78);
+  D.drawString(S_AVISO_INCOMUN_4, TFT_W / 2, 90);
+
+  D.setTextColor(TFT_WHITE);
+  D.drawString(S_CONFIRMA, TFT_W / 2, 118);
+  D.setTextDatum(top_left);
+}
+
+// Informacion, de solo lectura. Se queda en Font0 a proposito: son nueve filas
+// de diagnostico para un adulto, no texto que tenga que leer un niño de lejos.
+void pantallaInfo() {
+  barraEstado();
+  D.setFont(&fonts::Font0);
+  const auto& c = store::config();
+  int y = UI_STATUSBAR_H + 4;
+  const int dy = 12;
+  char b[40];
+
+  auto fila = [&](const char* etiqueta, const char* valor, uint16_t color) {
+    D.setTextColor(0x8410);
+    D.drawString(etiqueta, 6, y);
+    D.setTextDatum(top_right);
+    D.setTextColor(color);
+    D.drawString(valor, TFT_W - 6, y);
+    D.setTextDatum(top_left);
+    y += dy;
+  };
+
+  fila(FT_NOMBRE, FT_VERSION, TFT_WHITE);
+
+  snprintf(b, sizeof(b), "%08X", (unsigned)app::nodoPropio());
+  fila(S_INFO_NODO, b, TFT_WHITE);
+
+  snprintf(b, sizeof(b), "%s  0x%02X", c.canal, (unsigned)app::canalHash());
+  fila(S_INFO_CANAL, b, TFT_WHITE);
+
+  snprintf(b, sizeof(b), "%.3f MHz SF%d", (double)RF_FREQ_MHZ, PRESET_LONG_FAST_SF);
+  fila(S_INFO_RADIO, b, TFT_WHITE);
+
+  const float duty = radio::dutyPct();
+  snprintf(b, sizeof(b), "%.1f%% de %.0f%%", (double)duty, (double)DUTY_HARD_PCT);
+  fila(S_INFO_CICLO, b, duty >= DUTY_SOFT_PCT ? TFT_ORANGE : TFT_WHITE);
+
+  snprintf(b, sizeof(b), "%u", (unsigned)app::nodos().total());
+  fila(S_INFO_NODOS, b, TFT_WHITE);
+
+  fila(S_INFO_TARJETA, store::hayTarjeta() ? S_SI : S_NO,
+       store::hayTarjeta() ? TFT_WHITE : TFT_ORANGE);
+
+  // El conmutador de antena no responde en este Cap y no hace falta: el TX/RX lo
+  // gobierna DIO2 del SX1262. Se informa, pero sin pintarlo de rojo, que seria
+  // señalar una averia que no existe.
+  fila(S_INFO_ANTENA, hal::antennaOk() ? S_SI : S_NO, 0x8410);
+
+  D.setTextColor(0x6B4D);
+  D.drawString(S_K_ESC, 4, TFT_H - 10 - altoAviso());
   pieAviso();
 }
 
@@ -540,6 +760,66 @@ void pantallaSosRecibido() {
 }
 
 // -------------------------- primer arranque ---------------------------------
+
+// --------------------- edicion de ajustes: acciones -------------------------
+
+void abrirEditor(Campo c) {
+  g_campo       = c;
+  g_confirmando = false;
+  g_derivando   = false;
+
+  // Se precarga el valor actual: cambiar una letra del nombre no deberia
+  // obligar a reescribirlo entero. La frase NO se precarga porque NO se guarda
+  // en ningun sitio: en NVS solo esta la clave que sale de ella.
+  const auto& cfg = store::config();
+  switch (c) {
+    case Campo::NOMBRE: snprintf(g_edit, sizeof(g_edit), "%s", cfg.nombre_largo); break;
+    case Campo::CORTO:  snprintf(g_edit, sizeof(g_edit), "%s", cfg.nombre_corto); break;
+    default:            g_edit[0] = '\0'; break;
+  }
+  g_edit_n = (int)strlen(g_edit);
+}
+
+void cerrarEditor() {
+  g_campo       = Campo::NINGUNO;
+  g_confirmando = false;
+  g_derivando   = false;
+  g_edit[0]     = '\0';
+  g_edit_n      = 0;
+}
+
+void guardarNombre() {
+  auto& c = store::configMutable();
+  if (g_campo == Campo::NOMBRE) {
+    snprintf(c.nombre_largo, sizeof(c.nombre_largo), "%s", g_edit);
+    util::truncarSeguro(c.nombre_largo, sizeof(c.nombre_largo) - 1);
+  } else {
+    snprintf(c.nombre_corto, sizeof(c.nombre_corto), "%s", g_edit);
+    util::truncarSeguro(c.nombre_corto, sizeof(c.nombre_corto) - 1);
+  }
+
+  if (store::guardar()) {
+    // Que los demas vean el nombre nuevo sin esperar los 15 min del ciclo.
+    app::anunciarNombre();
+    hal::beep();
+  } else {
+    hal::beepError();
+  }
+  cerrarEditor();
+}
+
+void aplicarFrase() {
+  g_derivando = true;
+  pintar();                      // avisa ANTES de bloquearse ~0,5 s en PBKDF2
+
+  if (store::ponerFrase(g_edit)) {
+    app::recargarCanal();
+    hal::beep();
+  } else {
+    hal::beepError();
+  }
+  cerrarEditor();
+}
 
 void pantallaAsistente() {
   D.fillScreen(TFT_BLACK);
@@ -627,6 +907,13 @@ void pintar() {
   if (s == app::Sos::RECIBIDO)      pantallaSosRecibido();
   else if (s == app::Sos::ARMANDO)  pantallaSosArmando();
   else if (!store::config().configurado) pantallaAsistente();
+  // El editor y su confirmacion se pintan POR ENCIMA de los ajustes, no dentro:
+  // ocupan la pantalla entera y no comparten nada con la lista.
+  else if (g_campo != Campo::NINGUNO) {
+    if (g_confirmando) pantallaConfirmar();
+    else               pantallaEditor();
+  }
+  else if (g_info) { D.fillScreen(TFT_BLACK); pantallaInfo(); }
   else {
     D.fillScreen(TFT_BLACK);
     switch (g_pant) {
@@ -704,11 +991,59 @@ bool tecla(const hal::Evento& ev) {
     return true;
   }
 
+  // --- editor de los ajustes: se come todas las teclas mientras este abierto ---
+  if (g_campo != Campo::NINGUNO) {
+    if (g_derivando) return true;          // ocupado derivando: no encolar teclas
+
+    if (g_confirmando) {
+      if (ev.tecla == hal::Tecla::ENTER)     aplicarFrase();
+      else if (ev.tecla == hal::Tecla::ESC)  g_confirmando = false;  // vuelve a editar
+      return true;
+    }
+
+    switch (ev.tecla) {
+      case hal::Tecla::CARACTER: {
+        // El nombre corto va siempre en mayusculas: es lo que se ve en el chat y
+        // en la lista de nodos, y mezclar cajas ahi queda desalineado.
+        const char ch = (g_campo == Campo::CORTO)
+                            ? (char)toupper((unsigned char)ev.ch) : ev.ch;
+        if (g_edit_n < maxBytesCampo(g_campo)) {
+          g_edit[g_edit_n++] = ch;
+          g_edit[g_edit_n]   = '\0';
+        } else {
+          hal::beepError();
+        }
+        break;
+      }
+      case hal::Tecla::BORRAR:
+        if (g_edit_n) g_edit[--g_edit_n] = '\0';
+        break;
+      case hal::Tecla::ENTER:
+        // Vacio se rechaza: un nodo sin nombre sale como numero hexadecimal, y
+        // una frase vacia dejaria el grupo sin clave.
+        if (!g_edit_n) { hal::beepError(); break; }
+        if (g_campo == Campo::FRASE) g_confirmando = true;
+        else                         guardarNombre();
+        break;
+      case hal::Tecla::ESC:
+        cerrarEditor();
+        break;
+      default: break;
+    }
+    return true;
+  }
+
+  // --- informacion: solo se sale ---
+  if (g_info) {
+    if (ev.tecla == hal::Tecla::ESC || ev.tecla == hal::Tecla::TAB) g_info = false;
+    return true;
+  }
+
   // --- navegacion normal ---
   switch (ev.tecla) {
     case hal::Tecla::TAB:
       g_pant = (ft_screen_t)((g_pant + 1) % SCR_COUNT);
-      g_sel = 0; g_scroll = 0; g_top = 0;
+      g_sel = 0; g_scroll = 0; g_top = 0; g_info = false;
       hal::beep();
       return true;
 
@@ -763,17 +1098,37 @@ bool tecla(const hal::Evento& ev) {
       } else if (g_pant == SCR_SETTINGS) {
         auto& c = store::configMutable();
         switch (g_sel) {
-          // Ojo con los desbordamientos: 90+20 = 110 -> 110*255/100 = 280,
-          // que como uint8_t es 24, y la pantalla se iria casi a negro.
-          case 2: c.brillo = (c.brillo >= 100) ? 20
-                             : (uint8_t)(c.brillo + 20 > 100 ? 100 : c.brillo + 20);
-                  D.setBrightness((uint8_t)((uint16_t)c.brillo * 255 / 100));
-                  store::guardar(); break;
-          // Igual aqui: 220+60 = 280 -> 24, y el volumen se desplomaria.
-          case 3: c.volumen = (c.volumen > 240 - 60) ? 60 : (uint8_t)(c.volumen + 60);
-                  hal::soundVolumen(c.volumen); store::guardar(); hal::beep(); break;
-          case 4: c.gps_activo = !c.gps_activo;
-                  hal::gpsEncender(c.gps_activo); store::guardar(); break;
+          // Brillo y volumen van por niveles 1..5 y dan la vuelta al llegar al
+          // ultimo. El valor guardado se reconstruye desde el nivel, que ya
+          // viene acotado: por eso aqui no puede haber desbordamiento.
+          case OPT_BRILLO: {
+            const int n = siguienteNivel(nivelDe(c.brillo, BRILLO_MIN_PCT, BRILLO_MAX_PCT));
+            c.brillo = (uint8_t)valorDe(n, BRILLO_MIN_PCT, BRILLO_MAX_PCT);
+            D.setBrightness((uint8_t)((uint16_t)c.brillo * 255 / 100));
+            store::guardar();
+            break;
+          }
+          case OPT_VOLUMEN: {
+            const int n = siguienteNivel(nivelDe(c.volumen, VOLUMEN_MIN, VOLUMEN_MAX));
+            c.volumen = (uint8_t)valorDe(n, VOLUMEN_MIN, VOLUMEN_MAX);
+            hal::soundVolumen(c.volumen);
+            store::guardar();
+            hal::beep();            // para oir el nivel nuevo, no solo verlo
+            break;
+          }
+          case OPT_GPS:
+            c.gps_activo = !c.gps_activo;
+            hal::gpsEncender(c.gps_activo);
+            store::guardar();
+            break;
+
+          // Campos de texto. Abren el editor; guardan al pulsar ENTER alli.
+          case OPT_NOMBRE: abrirEditor(Campo::NOMBRE); hal::beep(); break;
+          case OPT_CORTO:  abrirEditor(Campo::CORTO);  hal::beep(); break;
+          case OPT_FRASE:  abrirEditor(Campo::FRASE);  hal::beep(); break;
+
+          case OPT_INFO:   g_info = true; hal::beep(); break;
+
           default: hal::beep(); break;
         }
       }

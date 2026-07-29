@@ -77,7 +77,16 @@ void pantallaFallo() {
   D.endWrite();
 }
 
-// Boton lateral: pulsacion larga = SOS, corta = silenciar o despertar.
+// Boton G0: pulsacion larga = SOS, corta = silenciar o despertar.
+//
+// BtnA es GPIO 0, o sea el boton del propio modulo StampS3A -- el mismo del modo
+// descarga. NO hay boton dedicado en el chasis: M5Unified.cpp agrupa
+// board_M5CardputerADV con board_M5StampS3 y lee gpio_in(GPIO_NUM_0).
+//
+// PENDIENTE: es un disparador malo para una emergencia. Mantenerlo pulsado
+// MIENTRAS se enciende el aparato mete al ESP32-S3 en modo descarga y la
+// pantalla se queda muerta, que es justo la ruta facil a un estado roto que la
+// restriccion nº 8 prohibe. Hace falta una alternativa desde el teclado.
 void atenderBoton() {
   if (M5Cardputer.BtnA.isPressed()) {
     if (!g_boton_desde) g_boton_desde = millis();

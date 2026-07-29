@@ -45,4 +45,9 @@ uint32_t  nodoSeleccionado();
 // Recalcula clave y hash de canal tras cambiar la configuracion.
 void recargarCanal();
 
+// Adelanta el NODEINFO para que los demas vean el nombre nuevo enseguida en vez
+// de esperar hasta 15 minutos. NO transmite aqui: solo mueve el momento, y con
+// un retardo aleatorio para no colisionar si cambian varios a la vez.
+void anunciarNombre();
+
 }  // namespace app

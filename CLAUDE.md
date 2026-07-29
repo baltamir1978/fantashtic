@@ -32,14 +32,18 @@ Ver `ESTADO.md` para el detalle de qué falta y en qué orden probarlo.
 
 **ES**: un firmware ligero escrito desde cero (PlatformIO + Arduino-ESP32 + RadioLib +
 M5Unified) que reimplementa el **protocolo de radio de Meshtastic** (cabecera de 16 bytes,
-AES-CTR, encaminamiento por inundación) con fidelidad de byte, para poder validarlo contra un
-nodo con firmware oficial.
+AES-CTR, encaminamiento por inundación) con fidelidad de byte.
 
 **NO ES** un fork de `meshtastic/firmware`. No se arrastra su código, ni su sistema de
 módulos, ni MQTT, ni Bluetooth, ni la app móvil, ni el API serie.
 
 **NO ES** un nodo de la red pública Meshtastic. Se usa un canal privado con clave propia
 derivada de una frase.
+
+**La interoperabilidad con Meshtastic NUNCA fue un requisito.** La fidelidad de byte es una
+decisión de **método**: permite contrastar la implementación contra vectores conocidos y, si
+hiciera falta, depurar con un nodo de firmware oficial en la mesa. No se promete
+interoperabilidad y no es un objetivo pendiente. No presentarla como tal en la documentación.
 
 ---
 
@@ -285,8 +289,11 @@ Reglas de dependencia:
 
 - El cargador de batería no está documentado por M5Stack. No hay PMIC I²C: solo lectura de
   tensión por ADC.
-- Ajustes: las filas "Nombre", "Nombre corto", "Avanzado" e "Información" están dibujadas pero
-  no hacen nada al pulsar ENTER. El nombre solo se puede fijar en el asistente inicial.
+- No hay ruta de interfaz hacia `store::restablecer()`: el restablecimiento de fábrica existe
+  en la API pero no se puede lanzar desde el aparato. Con niños, añadirlo hay que pensarlo.
+- Ajustes: "Avanzado" se quitó (no hacía nada) y en su sitio está "Frase del grupo". Sigue sin
+  interfaz lo de preset, potencia y saltos máximos, que en `strings.h` tienen texto pero no
+  pantalla. Cambiarlos afecta al enlace, así que van detrás de confirmación cuando se hagan.
 - **La geometría de las cuatro pantallas en Font2 está calculada, no vista.** El ancho se
   mide en tiempo de ejecución con `D.textWidth()` donde puede pisarse algo (el valor de cada
   fila de ajustes, la columna de detalle de nodos), pero las posiciones verticales son

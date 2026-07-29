@@ -275,6 +275,13 @@ void recargarCanal() {
   Serial.printf("app: canal '%s' hash 0x%02X\n", store::config().canal, g_canal_hash);
 }
 
+void anunciarNombre() {
+  // Solo adelanta el momento; lo transmite loop() como cualquier otro NODEINFO,
+  // pasando por la cola y por el contador de ciclo de trabajo. Transmitir desde
+  // la interfaz se saltaria las dos cosas.
+  g_prox_nodeinfo = millis() + 1000 + (esp_random() % 2000);
+}
+
 bool enviarTexto(const char* txt) {
   if (!txt || !*txt) return false;
 

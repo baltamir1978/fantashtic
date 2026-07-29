@@ -23,8 +23,11 @@ struct Config {
   uint8_t preset      = 0;      // 0 = LONG_FAST
   uint8_t tx_dbm      = RF_TX_POWER_DBM;
   uint8_t hop_limit   = HOP_DEFAULT;
-  uint8_t brillo      = 70;     // 0-100
-  uint8_t volumen     = 160;    // 0-255
+  // Se guarda el valor real, no el nivel de la interfaz: el nivel 1..5 se
+  // deriva al vuelo (ver UI_NIVELES en config.h) y asi no hay que migrar la
+  // configuracion que ya haya en NVS. Los dos por defecto son el nivel 3.
+  uint8_t brillo      = 60;     // 0-100
+  uint8_t volumen     = 150;    // 0-255
   bool    gps_activo  = true;
   bool    configurado = false;  // false -> asistente de primer arranque
   // El usuario confirmo una vez que la antena esta atornillada. Se recuerda

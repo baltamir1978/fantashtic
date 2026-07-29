@@ -70,11 +70,37 @@
 #define S_ACTIVADO        "activado"
 #define S_DESACTIVADO     "apagado"
 
+// --- edicion de ajustes ------------------------------------------------------
+#define S_EDIT_GUARDAR    "ENTER = guardar    ESC = cancelar"
+#define S_EDIT_NOMBRE_1   "Como se llama este aparato."
+#define S_EDIT_NOMBRE_2   "Hasta 15 letras."
+#define S_EDIT_CORTO_1    "4 letras, las que se ven en"
+#define S_EDIT_CORTO_2    "el chat y en la lista de nodos."
+#define S_EDIT_FRASE_1    "La MISMA en todos los aparatos."
+#define S_EDIT_FRASE_2    "Cuanto mas larga, mejor."
+#define S_EDIT_VACIO      "No puede quedarse vacio"
+
 // --- confirmaciones ----------------------------------------------------------
 #define S_SEGURO          "Seguro?"
-#define S_AVISO_INCOMUN   "Esto puede dejar este aparato\nincomunicado del resto."
+// Partido en dos porque drawString() no interpreta el \n: una sola cadena con
+// salto de linea se pintaria como un solo renglon con basura en medio.
+#define S_AVISO_INCOMUN_1 "Esto deja este aparato"
+#define S_AVISO_INCOMUN_2 "incomunicado del resto"
+#define S_AVISO_INCOMUN_3 "hasta que cambies la frase"
+#define S_AVISO_INCOMUN_4 "en TODOS."
 #define S_CONFIRMA        "ENTER = si     ESC = no"
 #define S_GUARDADO        "Guardado"
+
+// --- informacion -------------------------------------------------------------
+#define S_INFO_NODO       "Nodo"
+#define S_INFO_CANAL      "Canal"
+#define S_INFO_RADIO      "Radio"
+#define S_INFO_CICLO      "Ciclo de trabajo"
+#define S_INFO_NODOS      "Nodos vistos"
+#define S_INFO_TARJETA    "Tarjeta"
+#define S_INFO_ANTENA     "Conmutador ant."
+#define S_SI              "si"
+#define S_NO              "no"
 
 // --- primer arranque ---------------------------------------------------------
 #define S_BIENVENIDA      "Bienvenido a Fantashtic"
