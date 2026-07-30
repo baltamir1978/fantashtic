@@ -80,7 +80,7 @@ p('Sistema de mensajería LoRa privada para grupos reducidos,',
 p('sin infraestructura de red', size=12, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=60)
 for _ in range(6): doc.add_paragraph()
 p('Autor:  Bruno Altamirano', align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
-p('Versión 1.0  ·  29 de julio de 2026', align=WD_ALIGN_PARAGRAPH.CENTER, color=GRIS, space_after=2)
+p('Versión 1.1  ·  30 de julio de 2026', align=WD_ALIGN_PARAGRAPH.CENTER, color=GRIS, space_after=2)
 p('Estado: operativo en dos unidades; pendientes las pruebas de campo',
   align=WD_ALIGN_PARAGRAPH.CENTER, color=GRIS)
 doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
@@ -283,14 +283,30 @@ p('La pantalla mide 240 × 135 píxeles, lo que permite mostrar cinco líneas de
   'limitación física determina el diseño: los nombres se abrevian a cuatro caracteres y cada nodo '
   'recibe un color propio, de manera que un niño identifica al remitente por el color sin necesidad '
   'de leer.')
-p('Se organiza en cuatro pantallas —conversación, nodos, brújula y ajustes— que rotan con la tecla '
-  'de tabulación, más una pantalla de emergencia que se superpone a todas las demás. El historial se '
-  'recorre con las teclas de cursor. Una barra de estado permanente muestra la calidad del último '
-  'enlace, los nodos visibles, el uso del ciclo de trabajo, el estado del GPS y la batería.')
-p('La función de emergencia se activa manteniendo pulsado el botón lateral durante dos segundos, '
-  'seguido de una confirmación con cuenta atrás de tres segundos. En recepción, ocupa la pantalla '
-  'completa, emite una alarma acústica y ofrece responder con un solo toque. Se repite '
+p('Se organiza en cinco pantallas —conversación, nodos, brújula, posición propia y ajustes— que '
+  'rotan con la tecla de tabulación, más una pantalla de emergencia que se superpone a todas las '
+  'demás. El historial se recorre con las teclas de cursor. Una barra de estado permanente muestra '
+  'la calidad del último enlace, los nodos visibles, el uso del ciclo de trabajo, el estado del GPS '
+  'y la batería.')
+p('La pantalla de posición propia se incorporó al comprobarse que las coordenadas del equipo solo '
+  'podían consultarse por consola, lo que exigía un ordenador. Su uso previsto es leerlas en voz '
+  'alta por radio, de modo que presenta latitud y longitud con cinco decimales —aproximadamente un '
+  'metro— y acompaña el índice de dilución de la precisión con su interpretación en palabras, dado '
+  'que la cifra por sí sola no resulta informativa para el usuario. Distingue expresamente los '
+  'satélites empleados en la solución de los observados, que proceden de tramas distintas y no son '
+  'magnitudes equivalentes. En ausencia de solución de posición indica la causa probable, '
+  'diferenciando el fallo de cableado de la falta de cobertura.')
+p('La función de emergencia se activa mediante una combinación de dos teclas mantenida durante dos '
+  'segundos, seguida de una confirmación con cuenta atrás de tres segundos. En recepción ocupa la '
+  'pantalla completa, emite una alarma acústica y ofrece responder con un solo toque. Se repite '
   'automáticamente hasta que alguien contesta.')
+p('La combinación se eligió atendiendo al instante de la SUELTA y no al de la pulsación. Dos teclas '
+  'nunca se liberan en el mismo milisegundo, de modo que la que permanece pulsada emite su propio '
+  'evento: con la combinación inicial, que incluía la tecla de envío, liberar primero la otra '
+  'provocaba el envío del texto que hubiera en la línea de conversación en plena emergencia. La '
+  'combinación definitiva sustituye esa tecla por la de borrado, cuyo peor efecto al liberarse es '
+  'eliminar un carácter. Ambas siguen situadas en esquinas opuestas del teclado, lo que dificulta la '
+  'activación accidental. Existe además el pulsador del módulo como vía secundaria.')
 
 h('5.7. Almacenamiento', 2)
 p('El historial de conversación se registra en la tarjeta microSD como un fichero de texto por mes, '
@@ -391,13 +407,14 @@ tabla(['Fase', 'Contenido', 'Estado'],
        ['5', 'Control del ciclo de trabajo', 'Completada, 64 pruebas automáticas'],
        ['6', 'Conversación e interfaz', 'Completada'],
        ['7', 'Gestión de nodos', 'Verificada en hardware'],
-       ['8', 'Posicionamiento y brújula', 'GPS verificado; brújula sin verificar'],
+       ['8', 'Posicionamiento, brújula y posición propia', 'GPS verificado; pantallas sin verificar'],
        ['9', 'Función de emergencia', 'Completada, sin verificar de extremo a extremo'],
        ['10', 'Configuración en el dispositivo', 'Completada'],
-       ['11', 'Acabado y documentación', 'Pendiente de las pruebas de campo']],
+       ['11', 'Ahorro de energía', 'Parcial: escalado de reloj sí; suspensión ligera descartada'],
+       ['12', 'Acabado y documentación', 'Pendiente de las pruebas de campo']],
       [1.8, 9.2, 5.0])
 p('Se dispone de dos unidades operativas que intercambian mensajes cifrados por radio, con una '
-  'potencia recibida de −18 a −29 dBm a corta distancia y una relación señal a ruido de 6 a 7 dB. '
+  'potencia recibida de −12 a −29 dBm a corta distancia y una relación señal a ruido de 6 a 7 dB. '
   'El protocolo se ha validado por dos vías independientes: contraste con vectores de prueba '
   'generados con una implementación de referencia, y funcionamiento real entre dos equipos.')
 p('Queda pendiente la verificación de la retransmisión, que requiere un tercer equipo y constituye '
@@ -416,10 +433,18 @@ p('Se han validado asimismo cuatro constantes publicadas del protocolo original,
   'calibración: si alguna de ellas no se reproduce, el error está en la primitiva y no en la '
   'configuración.')
 h('10.2. Pruebas en hardware', 2)
-p('Cada fase incorpora un criterio de aceptación explícito. El de la fase 3 es determinante: un '
-  'dispositivo con el firmware comercial original, configurado con la misma región, preajuste, '
-  'nombre de canal y clave, debe mostrar en su pantalla los mensajes generados por el firmware '
-  'propio.')
+p('Cada fase incorpora un criterio de aceptación explícito. El determinante es el de la fase de '
+  'radio, y se ha superado: dos equipos independientes intercambian mensajes cifrados por el aire, '
+  'con encaminamiento y confirmación implícita de entrega verificados en ambos sentidos.')
+p('Procede una precisión sobre el criterio que figuraba en la redacción anterior de este apartado. '
+  'Se enunciaba como decisivo que un dispositivo con el firmware comercial original mostrase en su '
+  'pantalla los mensajes generados por el firmware propio. Ese enunciado era un error de encuadre: '
+  'la interoperabilidad con el proyecto de referencia nunca fue un requisito del sistema, que opera '
+  'en un canal privado con clave propia y no como nodo de la red pública. La fidelidad del formato '
+  'de paquete es una decisión de método —permite contrastar la implementación contra vectores de '
+  'prueba conocidos y, si llegara a ser necesario, depurar frente a un equipo de referencia—, no un '
+  'objetivo del proyecto. Queda por tanto como herramienta opcional de diagnóstico y no como '
+  'criterio de aceptación.')
 h('10.3. Pruebas de campo', 2)
 p('Se ha definido un protocolo de siete ensayos —referencia en mesa, polarización, alejamiento en '
   'campo abierto, absorción corporal, entornos urbano y forestal, retransmisión con tres nodos, '
@@ -471,10 +496,38 @@ p('El firmware se encuentra operativo en dos unidades, que intercambian mensajes
   'con encaminamiento y confirmación implícita de entrega. Los siguientes hitos son la verificación '
   'de la retransmisión con un tercer equipo, las pruebas de exterior y la medida del consumo real, '
   'de la que depende la estimación de autonomía.')
-p('Sobre la autonomía: se han incorporado el escalado de frecuencia del procesador y el espaciado '
-  'adaptativo del ciclo de ejecución, ambos verificados en el equipo. La medida de mayor impacto, la '
-  'suspensión ligera del procesador, se implementó y se desactivó al comprobarse que dejaba el nodo '
-  'sin recepción de radio; queda documentada y pendiente de resolver.')
+p('Sobre la autonomía procede un informe detallado, porque el resultado es negativo y conviene '
+  'dejarlo constatado. Se han incorporado el escalado de frecuencia del procesador y el espaciado '
+  'adaptativo del ciclo de ejecución, ambos verificados en el equipo. La medida de mayor impacto '
+  'esperado, la suspensión ligera del procesador, se ha implementado dos veces y se ha desactivado '
+  'las dos.')
+p('En la primera se identificó una causa concreta y demostrada: la interfaz de despertar por '
+  'máscara de pines reconfigura cada pin implicado hacia el dominio del reloj de tiempo real y no lo '
+  'devuelve al despertar. Con ello se pierden a la vez la interrupción de la línea de aviso del '
+  'transceptor y la relectura por nivel de esa misma línea, que estaba prevista precisamente como '
+  'red de seguridad frente a la pérdida de un flanco. Al depender ambas de la misma configuración, '
+  'la salvaguarda quedaba tan inutilizada como el mecanismo que debía proteger, lo que explica que '
+  'el equipo no se recuperase nunca.')
+p('Corregido ese punto mediante la interfaz de despertar por nivel, que no altera la configuración '
+  'del pin, el equipo desconectado de la alimentación externa continúa dejando de responder '
+  'transcurridos treinta segundos, y se observa además un chasquido audible en el altavoz al entrar '
+  'y salir de la suspensión. La conclusión es que la causa identificada era necesaria pero no '
+  'suficiente, y que subsiste al menos otra sin determinar. El chasquido constituye la indicación '
+  'más aprovechable: sugiere que el códec de audio pierde su reloj durante la suspensión y no se '
+  'restablece correctamente, lo que obliga a sospechar el mismo comportamiento en otros periféricos, '
+  'incluido el bus de la radio.')
+p('En un equipo cuya finalidad es recibir un aviso de emergencia, una medida de ahorro que puede '
+  'costar la recepción no se incorpora. La función queda escrita y desactivada, detrás de un '
+  'indicador de compilación, con constancia de lo ya descartado para que no se repita el mismo '
+  'camino.')
+p('De la misma investigación se derivan dos correcciones a la documentación anterior, ambas medidas. '
+  'La primera es que el mandato de reducción de cadencia del receptor de posicionamiento no surte el '
+  'efecto que se le atribuía: solicitando una fijación cada cinco segundos, el caudal de tramas baja '
+  'aproximadamente de 630 a 400 bytes por segundo y las ráfagas siguen produciéndose cada segundo, '
+  'en lugar de reducirse a la vigésima parte como se afirmaba. El firmware mide ahora ese intervalo '
+  'en lugar de suponerlo. La segunda es que el número de satélites empleados en la solución puede '
+  'ser superior al de satélites observados, lo que solo es contradictorio en apariencia: proceden de '
+  'tramas distintas y la segunda se refiere a una sola constelación.')
 
 # ============================ 13 REFERENCIAS ============================
 h('13. Referencias', 1)

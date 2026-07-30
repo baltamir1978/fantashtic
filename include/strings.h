@@ -19,6 +19,7 @@
 #define S_SCR_CHAT        "CHAT"
 #define S_SCR_NODOS       "NODOS"
 #define S_SCR_BRUJULA     "BRUJULA"
+#define S_SCR_POSICION    "MI POSICION"
 #define S_SCR_AJUSTES     "AJUSTES"
 
 // --- chat --------------------------------------------------------------------
@@ -40,6 +41,34 @@
 #define S_RUMBO           "rumbo"
 #define S_SIN_POSICION    "Sin posicion de ese nodo"
 #define S_NORTE_ARRIBA    "N arriba (parado)"
+
+// --- mi posicion -------------------------------------------------------------
+// "Sats usados" y NO "visibles": el numero de la trama GGA son los satelites que
+// entran en la solucion. Los que se ven estan en las tramas GSV y se leen aparte;
+// cuando llegan, se muestran como "9 de 14". Etiquetar unos como los otros seria
+// dar un numero equivocado con una etiqueta correcta.
+#define S_POS_LAT         "Latitud"
+#define S_POS_LON         "Longitud"
+#define S_POS_ALT         "Altitud"
+#define S_POS_SATS        "Sats usados"
+#define S_POS_PRECISION   "Precision"
+#define S_POS_DE          "de"
+
+// El HDOP en palabras: el numero solo no le dice nada a nadie, y menos a un nino.
+#define S_HDOP_EXCELENTE  "excelente"
+#define S_HDOP_BUENO      "bueno"
+#define S_HDOP_ACEPTABLE  "aceptable"
+#define S_HDOP_MALO       "malo"
+
+// Sin fix la pantalla tiene que decir POR QUE, que es la mitad de su valor.
+#define S_POS_BUSCANDO    "Buscando satelites..."
+#define S_POS_SIN_UART    "El GPS no manda datos"
+#define S_POS_REVISA_UART "Revisa el cable (UART)"
+#define S_POS_APAGADO     "El GPS esta apagado"
+#define S_POS_EN_AJUSTES  "Se enciende en Ajustes"
+#define S_POS_NMEA        "Recibido"
+#define S_POS_AL_AIRE     "a la vista"
+#define S_POS_DESDE       "Buscando desde"
 
 // --- SOS ---------------------------------------------------------------------
 #define S_SOS             "SOS"
@@ -115,7 +144,7 @@
 #define S_PRESET_2        "Rapido"
 
 // SOS por teclado
-#define S_SOS_TECLAS      "ENTER+ESC 2s = SOS"
+#define S_SOS_TECLAS      "ESC+DEL 2s = SOS"
 
 // --- informacion -------------------------------------------------------------
 #define S_INFO_NODO       "Nodo"

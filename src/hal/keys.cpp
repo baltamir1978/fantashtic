@@ -86,11 +86,13 @@ bool keysPoll(Evento* ev) {
 bool keysSosCombo() {
   if (!M5Cardputer.Keyboard.isPressed()) return false;
   const auto& st = M5Cardputer.Keyboard.keysState();
-  if (!st.enter) return false;
+  if (!st.del) return false;
 
-  // ESC se sintetiza de '`'. Hay que recorrer TODA la lista de teclas pulsadas:
-  // keysPoll() devuelve un solo evento y se queda con ENTER, asi que por esa via
-  // el combo es invisible.
+  // ESC es la tecla '`', que es un caracter imprimible y va en st.word; DEL no lo
+  // es y va en st.del. Por eso las dos se ven A LA VEZ, que es lo que hace posible
+  // el combo. Hay que recorrer TODA la lista de teclas pulsadas: keysPoll()
+  // devuelve un solo evento y se queda con el primero que encuentra, asi que por
+  // esa via el combo es invisible.
   for (const char c : st.word)
     if (c == '`') return true;
   return false;

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <M5Unified.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 
 #include "config.h"
@@ -83,63 +84,133 @@ bool cpuEsRapido() { return g_rapido; }
 
 // --- light sleep -------------------------------------------------------------
 
-static bool g_sleep_ok = false;
+static bool       g_sleep_ok = false;
+static SleepStats g_stats;
+
+bool usbConectado() {
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT && \
+    defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE
+  // isPlugged() lo mantiene un hook del tick de FreeRTOS que vigila los SOF del
+  // USB: un host los manda cada milisegundo, un cargador tonto no manda ninguno.
+  // Arranca en true, asi que en el primer arranque no se duerme hasta que el hook
+  // confirme que no hay nadie.
+  //
+  // CON HISTERESIS, y esto NO es adorno. Los SOF paran en cuanto el host suspende
+  // el puerto, y Windows lo suspende cuando ningun programa lo tiene abierto. Sin
+  // histeresis, un hueco de 5 ms basta para que el nodo se duerma con el cable
+  // puesto. Se recuerda el ultimo SOF visto y se da por presente el ordenador
+  // durante USB_HISTERESIS_MS mas.
+  //
+  // LO QUE ESTO NO ARREGLA, y hay que saberlo: si el puerto queda suspendido un
+  // rato largo, el nodo se duerme igual y a partir de ahi esptool ya no lo alcanza
+  // ("No serial data received"). No es un ladrillo: el bootloader del ESP32-S3
+  // esta en ROM y se recupera con interruptor OFF -> mantener G0 -> dar corriente
+  // -> soltar. Es el precio acordado de dejar el light sleep siempre activo.
+  static uint32_t visto = 0;
+  if (Serial.isPlugged()) { visto = millis(); return true; }
+  return visto && (millis() - visto) < USB_HISTERESIS_MS;
+#else
+  return false;
+#endif
+}
 
 void sleepBegin() {
 #ifndef FT_LIGHT_SLEEP
-  // DESACTIVADO A PROPOSITO. Ver el bloque de autonomia en CLAUDE.md.
+  // DESACTIVADO. Medido en el aparato el 30-jul-2026, y esta vez con gpio_wakeup
+  // en vez de ext1: el nodo desenchufado SIGUE quedandose tonto a los 30 s, o sea
+  // en cuanto se duerme la pantalla y empieza a dormir. Y ademas el altavoz
+  // CREPITA al entrar y salir del sueño.
   //
-  // Medido el 29-jul-2026: con el light sleep activo, el nodo se queda SORDO Y
-  // MUDO en cuanto la pantalla se duerme. Dos evidencias independientes:
-  //   - COM11, sin consola conectada, dejo de transmitir a los 30 s de arrancar
-  //     y no contesto al NODEINFO de COM10.
-  //   - COM10 dejo de imprimir en el instante exacto del primer sueño.
-  // (Lo segundo por si solo no prueba nada: el light sleep tumba el
-  //  USB-Serial-JTAG y perder la consola es lo esperado. Lo que no se explica
-  //  con eso es el silencio de radio del otro nodo.)
-  //
-  // Hipotesis principal, sin confirmar: esp_sleep_enable_ext1_wakeup() pasa el
-  // GPIO 4 (DIO1) al dominio RTC y eso rompe la interrupcion GPIO normal que
-  // RadioLib registro con setDio1Action(). Sin esa ISR, g_irq nunca se levanta y
-  // la maquina de estados de la radio se queda parada para siempre.
-  //
-  // En un aparato cuya razon de ser es recibir un SOS, esto no se embarca
-  // encendido. Se compila con -DFT_LIGHT_SLEEP para retomarlo, y hay que
-  // resolver la ISR de DIO1 antes de darlo por bueno.
+  // O sea que el arreglo del mux del GPIO era necesario pero NO suficiente: queda
+  // al menos otra causa sin encontrar. No se embarca en un aparato cuya razon de
+  // ser es recibir un SOS. El codigo y la investigacion se quedan detras de
+  // -DFT_LIGHT_SLEEP; ver ESTADO.md para lo que ya esta descartado.
   g_sleep_ok = false;
+  Serial.println("energia: light sleep DESACTIVADO (ver ESTADO.md)");
   return;
 #else
-  // Las tres lineas que tienen que poder despertarnos. Se arman una sola vez:
-  // ext1 es una mascara de pines, no hay que rearmarla en cada dormida.
-  //
-  // DIO1 y el INT del teclado despiertan en ALTO; el boton G0 lleva pull-up y se
-  // va a BAJO al pulsarlo, asi que ese NO puede ir en la misma mascara ext1 (un
-  // solo nivel para todos los pines). El boton se detecta en el tick siguiente,
-  // que con 50 ms de tope y 2 s de pulsacion larga llega de sobra.
-  const uint64_t mascara = (1ULL << PIN_LORA_DIO1) | (1ULL << PIN_KB_INT);
-  const esp_err_t e = esp_sleep_enable_ext1_wakeup(mascara, ESP_EXT1_WAKEUP_ANY_HIGH);
-  if (e != ESP_OK) {
-    Serial.printf("energia: ext1 fallo (%d), sin light sleep\n", (int)e);
-    g_sleep_ok = false;
-    return;
-  }
+  // El INT del teclado es de colector abierto: sin pull-up flota y una linea que
+  // flota baja despierta sin parar, o sea light sleep que vuelve al instante.
+  pinMode(PIN_KB_INT, INPUT_PULLUP);
+
+  // Nada mas que armar aqui. A diferencia de ext1, las fuentes de gpio_wakeup se
+  // arman en CADA dormida: gpio_wakeup_enable() cambia el tipo de interrupcion
+  // del pin a "por nivel", y eso pisa el flanco de subida que RadioLib pidio con
+  // setDio1Action(). Dejarlo puesto entre sueños tendria dos consecuencias malas:
+  // una interrupcion por nivel se repite mientras la linea siga alta (tormenta de
+  // ISR hasta que el bucle limpie la IRQ por SPI), y ademas cambiaria la semantica
+  // de la que depende la radio. Se pone justo antes de dormir y se quita justo
+  // despues de despertar.
   g_sleep_ok = true;
-  Serial.printf("energia: light sleep listo (despiertan DIO1 %d, teclado %d)\n",
-                PIN_LORA_DIO1, PIN_KB_INT);
+  Serial.printf("energia: light sleep listo (DIO1 %d alto, teclado %d bajo, boton %d bajo)\n",
+                PIN_LORA_DIO1, PIN_KB_INT, PIN_BTN);
 #endif
 }
 
 bool sleepDisponible() { return g_sleep_ok; }
 
-void dormirHasta(uint32_t ms) {
-  if (!g_sleep_ok || ms == 0) { delay(ms); return; }
+const SleepStats& sleepStats() { return g_stats; }
+void sleepContarNoGps() { g_stats.no_gps++; }
+
+uint32_t dormirHasta(uint32_t ms) {
+  if (!g_sleep_ok || ms == 0) { delay(ms); return 0; }
+
+  // 1. Con un ordenador en el USB no se duerme: ver usbConectado().
+  if (usbConectado()) { g_stats.no_usb++; delay(ms); return 0; }
+
+  // 2. Si DIO1 ya esta alto, la radio tiene un aviso sin atender. Dormir aqui
+  //    seria dormir con trabajo pendiente; y ademas el despertador por nivel
+  //    saltaria de inmediato, asi que no se ahorraria nada.
+  if (digitalRead(PIN_LORA_DIO1)) { g_stats.no_dio1++; delay(ms); return 0; }
+
+  // 3. Armar las fuentes. Un nivel POR PIN, que es lo que ext1 no permitia.
+  //
+  //    Se arma solo lo que este en reposo: una linea ya activa despertaria en el
+  //    acto y el light sleep se volveria un no-op silencioso que gasta mas que el
+  //    delay(). El caso real es el INT del teclado, que se queda bajo hasta que
+  //    alguien vacie la cola de eventos del TCA8418.
+  gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
+  const bool kb  = digitalRead(PIN_KB_INT);   // en reposo esta ALTO (open drain)
+  const bool btn = digitalRead(PIN_BTN);      // en reposo esta ALTO (pull-up)
+  if (kb)  gpio_wakeup_enable((gpio_num_t)PIN_KB_INT, GPIO_INTR_LOW_LEVEL);
+  if (btn) gpio_wakeup_enable((gpio_num_t)PIN_BTN,    GPIO_INTR_LOW_LEVEL);
+
+  // 4. Callar la ISR de DIO1 mientras dormimos. El despertar NO la necesita (lo
+  //    dispara el bit de wakeup del pin, no que la interrupcion llegue al CPU),
+  //    y asi se evita de raiz la tormenta de ISR por nivel al despertar con la
+  //    linea alta. No se pierde el aviso: radioLoop() rearma por nivel leyendo
+  //    DIO1 en cada vuelta, que es exactamente para lo que estaba puesto.
+  gpio_intr_disable((gpio_num_t)PIN_LORA_DIO1);
+
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000ULL);
 
   // Vaciar la consola ANTES de dormir: el USB-Serial-JTAG se apaga con el CPU y
-  // lo que quede en el buffer se perderia a medias.
+  // lo que quede en el buffer se perderia a medias. (Con el cable puesto no se
+  // llega hasta aqui, pero un cargador tonto tambien deja el USB alimentado.)
   Serial.flush();
 
-  esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000ULL);
+  const uint32_t t0 = millis();
   esp_light_sleep_start();
+  const uint32_t dormido = millis() - t0;
+
+  // 5. Deshacerlo TODO, y lo primero devolver DIO1 al flanco de subida: hasta que
+  //    eso ocurra, el pin esta configurado por nivel y la semantica de RadioLib
+  //    no se cumple. gpio_wakeup_disable() deja el tipo en DISABLE, asi que hay
+  //    que volver a ponerlo a mano; POSEDGE es lo que significa el RISING que usa
+  //    Module::setDio1Action().
+  gpio_wakeup_disable((gpio_num_t)PIN_LORA_DIO1);
+  gpio_set_intr_type((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_POSEDGE);
+  gpio_intr_enable((gpio_num_t)PIN_LORA_DIO1);
+  if (kb)  gpio_wakeup_disable((gpio_num_t)PIN_KB_INT);
+  if (btn) gpio_wakeup_disable((gpio_num_t)PIN_BTN);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+
+  g_stats.veces++;
+  g_stats.ms_dormido += dormido;
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) g_stats.desp_gpio++;
+  else                                                       g_stats.desp_timer++;
+  return dormido;
 }
 
 }  // namespace hal

@@ -8,23 +8,33 @@ Parte de los usuarios son niños, y eso gobierna casi todas las decisiones de in
 
 ## ⚠ ESTADO ACTUAL — LEER PRIMERO
 
-**El firmware está completo y auditado, pero NUNCA se ha ejecutado en el aparato.**
-Todas las fases (0 a 10) están escritas. Faltaba solo la sesión con hardware.
+**El firmware funciona en el aparato.** Dos sesiones con hardware (29 y 30 de julio de 2026) y
+**dos nodos hablándose por radio**: `130C92AC` 'COVA' (COM10) y `130C9A3C` 'PONS' (COM11).
 
-- **63 tests pasan en el ordenador** (`pio test -e native`): protocolo, router, ciclo de
-  trabajo, criptografía, geodesia, UTF-8, tabla de nodos y los mensajes `Position` / `User`
-  / `Telemetry`. Todo eso está verificado de verdad, no "revisado".
-- **Sin verificar**: pantallas, teclado, GPS, microSD, radio y toda la integración. Escrito
-  y auditado dos veces, pero no ejecutado.
+Verificado ejecutando código, no leyéndolo:
 
-**Bloqueante inmediato**: `I2C_ADDR_ANTSW` en `include/config.h` vale `0xFF` (centinela de
-"sin configurar"). Mientras siga así, `antennaBegin()` devuelve `SIN_CONFIGURAR`,
-`radioBegin()` se niega a arrancar y el firmware se queda en la pantalla de error. **Es una
-protección deliberada, no un fallo.** La dirección real sale del escáner I²C que el firmware
-imprime por consola al encender: es la que aparece con el Cap montado y no aparece sin él.
-Candidata más probable: **0x43**.
+- **64 tests en el ordenador** (`pio test -e native`): protocolo, router, ciclo de trabajo,
+  criptografía, geodesia, UTF-8, tabla de nodos y los mensajes `Position` / `User` / `Telemetry`.
+- **En el aparato**: arranque, pantalla, teclado, microSD, NVS, GPS con fix, y el **enlace de
+  radio entre dos nodos a −12/−18 dBm** — o sea cripto, cabecera, router y ACK implícito en el
+  aire real y en los dos sentidos.
 
-Ver `ESTADO.md` para el detalle de qué falta y en qué orden probarlo.
+Lo que **sigue sin verificar**, y hay que decirlo sin adornos:
+
+- **El light sleep NO funciona y está desactivado.** Se reescribió el 30-jul con `gpio_wakeup`,
+  se encontró y arregló una causa real, y **el nodo desenchufado se sigue quedando tonto a los
+  30 s**. Necesario pero no suficiente. Ver `ESTADO.md`: lo descartado y por dónde seguir.
+- **Los mA.** No hay ni una medida de consumo. Todo lo de autonomía es de hoja de datos.
+- **La geometría de las cinco pantallas.** Calculada sobre 240×135, no vista.
+- El relevo con tres aparatos, el SOS de punta a punta y las pruebas de exterior.
+
+**El conmutador de antena del Cap NO responde** (medido en dos unidades, en los dos buses, a
+las dos velocidades, con dos drivers, con el Cap puesto y sin él). No es un fallo del firmware
+ni un Cap defectuoso: sus líneas I²C no llegan al host. `radioBegin()` avisa y continúa, y el
+enlace medido a −18 dBm demuestra que el TX/RX lo gobierna DIO2 del SX1262. Ver la restricción
+nº 2 y `ESTADO.md`.
+
+Ver `ESTADO.md` para el detalle y el orden de las pruebas que quedan.
 
 ---
 
@@ -215,7 +225,7 @@ El Cardputer Adv aparece como **COM10**, VID:PID `303A:1001` (USB-Serial-JTAG).
 La consola solo imprime el diagnóstico al arrancar, así que para verlo hay que
 encadenar `-t upload -t monitor`: abrir el monitor a posteriori llega tarde.
 
-Tests en el ordenador (**63 casos, 63 en verde**). Necesitan un `g++` de
+Tests en el ordenador (**64 casos, 64 en verde**). Necesitan un `g++` de
 verdad; en esta máquina solo había MSVC, que rechaza los `build_flags` estilo
 GCC del entorno `native`:
 
@@ -238,7 +248,7 @@ src/
   mesh/        history router duty nodedb        ← sin Arduino, se prueba en host
   util/        geo utf8                          ← sin Arduino, se prueba en host
   app/         orquestación, SOS, envíos periódicos
-  ui/          cuatro pantallas, SOS, asistente
+  ui/          cinco pantallas, SOS, asistente
   store/       NVS (config y clave) + microSD (historial)
 ```
 
@@ -246,7 +256,7 @@ Reglas de dependencia:
 
 - `ui/` **nunca** toca `radio/` directamente; pasa por `app/`.
 - `proto/`, `mesh/` y `util/` **no dependen de Arduino** y compilan en el ordenador. Es lo que
-  permite que existan los 63 tests. Al añadir código a esas capas, mantener la propiedad y
+  permite que existan los 64 tests. Al añadir código a esas capas, mantener la propiedad y
   actualizar `build_src_filter` del entorno `native`.
 - Todo el estado temporal se pasa por parámetro (reloj, aleatoriedad), no se lee de `millis()`
   dentro de la lógica: por eso el router y el ciclo de trabajo se pueden probar de forma
@@ -279,7 +289,13 @@ Reglas de dependencia:
 | No se retransmite nada | Filtrar por "¿es para mí?" en el router: en un broadcast es cierto |
 | El estado de entrega va al mensaje anterior | `recordarIdPaquete()` marca el **último** del buffer: hay que llamarlo DESPUÉS de `anadirMensaje()` |
 | La pantalla de nodos dice "no se ve a nadie" hasta que alguien manda un mensaje, y entonces sale el número y no el nombre | El descubrimiento estaba **al revés**: al oír a un desconocido se anunciaba el nombre PROPIO, cuando lo que hace falta es pedir el del otro. Si el otro lado ya te conocía, su regla no se disparaba y se quedaba callado. Pasaba siempre que un nodo se reiniciaba con el otro encendido (la tabla de nodos vive en RAM). Arreglado con `Data.want_response` (campo 3 de `mesh.proto`): el NODEINFO del arranque y el que dispara oír a un desconocido lo piden, y quien lo recibe contesta con el suyo **sin** pedirla, o serían dos nodos contestándose para siempre |
+| El nodo se queda **sordo** desde el primer light sleep, y la red de seguridad no salta | `esp_light_sleep_start()` llama a `ext1_wakeup_prepare()`, que hace **`rtc_gpio_init()`** sobre cada pin de la máscara de `esp_sleep_enable_ext1_wakeup()`. Eso saca el pin de la matriz GPIO digital y lo pasa al mux del dominio RTC, **y nadie lo devuelve al despertar**. En el GPIO 4 mueren por tanto LAS DOS vías de aviso: la ISR de `setDio1Action()` y el rearme por nivel `if (digitalRead(PIN_LORA_DIO1))` de `radioLoop()`, que estaba puesto justo para el caso de perder un flanco. Por eso no se recuperaba nunca y por eso la red no saltó: las mata la misma causa. Se arregla con `gpio_wakeup_enable()` + `esp_sleep_enable_gpio_wakeup()`, que no tocan el mux — es lo que hace Meshtastic en `src/sleep.cpp` (`enableLoraInterrupt()`). Y admiten un nivel **por pin**, así que ahí sí cabe el botón, que es activo bajo |
+| Las tramas NMEA salen con el checksum roto en cuanto se activa el light sleep | Durmiendo, el APB está parado y **el UART no recoge nada**: lo que llegue se pierde. El módulo suelta sus tramas en ráfagas, así que dormir a ciegas se come casi todas y el aparato deja de tener posición justo cuando nadie mira — que es cuando se emiten los avisos de posición automáticos. Se predice la ráfaga (`hal::gpsMsHastaProximaTrama()`). Despierto no se pierde nada: la ISR del UART sigue llenando el buffer de anillo aunque el bucle esté en un `delay()` |
+| `$PCAS02,5000` no baja el caudal NMEA a ~40 B/s | Medido el 30-jul-2026: baja de ~630 a ~400 B/s y **la ráfaga sigue llegando cada ~1000 ms**. El AT6668 no hace caso del todo (sigue soltando GSV mientras busca, por lo menos). Consecuencia: la previsión de la ráfaga hay que hacerla con el intervalo **medido**, no con el pedido; fiarse del pedido dormiría encima de cuatro ráfagas de cada cinco |
+| Abrir el puerto serie **resetea el nodo** | En el USB-Serial-JTAG, DTR/RTS gobiernan el reset y el modo de arranque, así que un `SerialPort.Open()` corriente provoca `rst:0x15 (USB_UART_CHIP_RESET)`. Para observar un nodo sin perturbarlo, **no abrir su puerto**: se mira desde la consola del otro |
+| Con el light sleep activo, esptool deja de alcanzar el nodo (`No serial data received`) | Windows **suspende** el puerto cuando ningún programa lo tiene abierto → paran los SOF del USB → `HWCDC::isPlugged()` pasa a false → el nodo se duerme → y dormido ya no hay USB al que resetear. El guardián del USB sirve para no perder una consola **ya abierta**, no como red de seguridad para flashear. No es un ladrillo: el bootloader está en ROM, se recupera con interruptor **OFF** → mantener **G0** → dar corriente → soltar |
 | El SOS se corta tras un envío | Cualquier mensaje entrante lo cancelaba; ahora exige completar la ráfaga |
+| Al soltar el combo del SOS se enviaba la línea de chat | El combo era ENTER+ESC, y dos teclas no se levantan nunca en el mismo milisegundo: soltando ESC primero quedaba ENTER pulsado y **se enviaba lo que hubiera escrito**, en plena emergencia. Cambiado a **ESC+DEL** el 30-jul-2026: lo peor que puede pasar al soltar es borrar un carácter. Siguen en esquinas opuestas del teclado, que es lo que hace el gesto difícil por accidente |
 | Brillo o volumen se desploman al segundo toque | Desbordamiento de `uint8_t`: 90+20 = 110 → `110*255/100` = 280 → 24 |
 | Coordenadas absurdas | `latitude_i` es **sfixed32**, no varint |
 | Paquete que no descifra sin motivo | `dest` / `request_id` / `reply_id` / `emoji` son **fixed32**, no varint |
@@ -295,16 +311,25 @@ Reglas de dependencia:
 - Ajustes: "Avanzado" se quitó (no hacía nada) y en su sitio está "Frase del grupo". Sigue sin
   interfaz lo de preset, potencia y saltos máximos, que en `strings.h` tienen texto pero no
   pantalla. Cambiarlos afecta al enlace, así que van detrás de confirmación cuando se hagan.
-- **Falta una pantalla de posición propia** (lat, lon, altitud, satélites, precisión). Hoy esos
-  datos solo salen por consola en `informeGps()`, o sea que hacen falta un ordenador y un cable.
-  Especificada en `ESTADO.md`. Ojo con un detalle: `Fix::satelites` son los satélites **usados
-  en la solución** (trama GGA), no los visibles; los visibles están en las tramas GSV, que
-  TinyGPSPlus no parsea sin un `TinyGPSCustom`. No etiquetar como "visibles" lo que son "usados".
-- **La geometría de las cuatro pantallas en Font2 está calculada, no vista.** El ancho se
+- ~~Falta una pantalla de posición propia.~~ **Hecha el 30-jul-2026**: `SCR_POSITION`, quinta
+  pantalla de la rotación del TAB, justo detrás de la brújula porque son la misma pregunta al
+  revés (dónde está el otro / dónde estoy yo). Cinco filas: latitud y longitud con 5 decimales
+  (~1 m, el formato que traga Google Maps), altitud, satélites y precisión. Sin fix dice **por
+  qué** no lo hay, con el mismo criterio que `informeGps()` y la barra de estado: cero bytes
+  NMEA = UART; con bytes y sin fix = cobertura. Detalle que había que respetar y se respetó:
+  `Fix::satelites` son los **usados en la solución** (trama GGA) y `Fix::satelites_vista` los
+  que se ven (tramas GSV, que TinyGPSPlus no parsea sin un `TinyGPSCustom`); se muestra
+  "9 de 14" cuando llegan los dos y solo el primero cuando no, pero **nunca** se etiqueta como
+  "a la vista" un número que son los usados.
+- **El SOS por teclado es ESC+DEL** (antes ENTER+ESC, ver la tabla de trampas). Pero
+  `S_SOS_TECLAS` **no se pinta en ninguna pantalla**: el atajo no se puede descubrir desde el
+  aparato, y en un cacharro sin manual eso importa. `pantallaInfo()` ya va con 9 filas de 12 px
+  y no cabe una décima, así que hace falta decidir dónde ponerlo.
+- **La geometría de las CINCO pantallas en Font2 está calculada, no vista.** El ancho se
   mide en tiempo de ejecución con `D.textWidth()` donde puede pisarse algo (el valor de cada
   fila de ajustes, la columna de detalle de nodos), pero las posiciones verticales son
   aritmética sobre 240×135. Confirmar en el aparato antes de darlas por buenas.
-### ⭐ Autonomía: el light sleep es lo siguiente y lo más importante
+### ⭐ Autonomía: el light sleep ya está escrito; falta MEDIRLO
 
 Hecho ya (sin riesgo, no depende de ninguna medida):
 
@@ -319,31 +344,53 @@ Hecho ya (sin riesgo, no depende de ninguna medida):
   SX1262 no es buena idea.
 - `informeEnergia()` lo saca por consola cada 5 s, porque si no es un cambio invisible.
 
-**Lo que falta, y es la ganancia grande: light sleep.** Investigado ya, para no repetirlo:
+**⛔ Light sleep: DESACTIVADO. Medido el 30-jul-2026 y NO vale.** Con `gpio_wakeup` en vez de
+`ext1`, el nodo desenchufado **sigue quedándose tonto a los 30 s** y además **el altavoz
+crepita** al entrar y salir del sueño. El arreglo de abajo era **necesario pero no suficiente**:
+queda al menos otra causa sin encontrar. Detrás de `-DFT_LIGHT_SLEEP`; en un aparato cuya razón
+de ser es recibir un SOS no se embarca algo que se queda sordo al quedarse solo. Lo ya descartado
+y las pistas nuevas (empezar por el códec de audio) están en `ESTADO.md`.
 
-- **`CONFIG_PM_ENABLE` NO está activado** en el `sdkconfig` de Arduino-ESP32 6.12.0 para el S3
-  (comprobado en `packages/framework-arduinoespressif32/tools/sdk/esp32s3/sdkconfig`). Por
-  tanto `esp_pm_configure()` no sirve y **el light sleep automático no es una opción** sin
-  recompilar el framework. No perder tiempo por ahí.
-- **Pero `esp_light_sleep_start()` sí está disponible**: vive en `esp_sleep`, no en `esp_pm`.
-  Y encaja con esta arquitectura, que ya es un planificador cooperativo con tick explícito:
-  se sustituye el `delay(tickMs())` por armar despertadores y dormir.
-- Las tres fuentes de despertar necesarias son **GPIO de dominio RTC en el S3** (0-21), así
-  que valen como `ext1`: DIO1 de la radio (**4**), INT del teclado (**11**) y el botón (**0**).
-- `millis()` va sobre `esp_timer`, que sigue contando durante el light sleep, así que **el
-  contador de ciclo de trabajo no se descuadra**. Verificarlo de todos modos.
-- **Trampa segura**: el light sleep tumba el USB-Serial-JTAG y se pierde la consola. Hay que
-  activarlo solo con la pantalla dormida, o detrás de una bandera de compilación, o no habrá
-  forma de depurar nada.
-- **IMPLEMENTADO Y DESACTIVADO el 29-jul**: con él activo, el nodo se queda **sordo y mudo** en
-  cuanto la pantalla se duerme. Está detrás de `-DFT_LIGHT_SLEEP`. Ver `ESTADO.md` para la
-  medida y, sobre todo, para el **siguiente paso**: mirar cómo lo hacen Meshtastic y MeshCore,
-  que corren sobre el mismo SX1262 con RadioLib. La hipótesis a comprobar primero es que usen
-  `esp_sleep_enable_gpio_wakeup()` en vez de `esp_sleep_enable_ext1_wakeup()`: `ext1` mueve el
-  pin al dominio RTC y eso es lo que se sospecha que mata la ISR de `setDio1Action()`, mientras
-  que `gpio_wakeup` despierta desde light sleep sin sacarlo del dominio digital.
-- `PIN_KB_INT` (GPIO 11) **no se usa hoy**: el teclado se sondea. Para el light sleep hay que
-  cablearlo como fuente de despertar.
+Lo que sigue se queda escrito porque la investigación vale, no porque esté resuelto. La causa del
+nodo sordo está localizada y era más profunda que la hipótesis; el detalle completo está en la
+tabla de trampas, en la fila "el nodo se queda sordo desde el primer light sleep". Resumen:
+`ext1` hace `rtc_gpio_init()` sobre el GPIO 4 y lo saca de la matriz digital **para siempre**,
+así que mata a la vez la ISR de `setDio1Action()` **y** el rearme por nivel de `radioLoop()`
+que estaba puesto de red de seguridad. Por eso no se recuperaba.
+
+Lo que hay hoy en `hal::dormirHasta()`:
+
+- **`gpio_wakeup_enable()` + `esp_sleep_enable_gpio_wakeup()`**, con un nivel **por pin**:
+  DIO1 (**4**) en ALTO, INT del teclado (**11**) en BAJO — es de colector abierto — y el botón
+  (**0**) en BAJO. Con `ext1` el botón no cabía: su máscara impone un nivel único.
+- **Solo se arma lo que esté en reposo.** Una línea ya activa despertaría en el acto y el
+  light sleep se volvería un no-op silencioso que gasta más que el `delay()`.
+- **La ISR de DIO1 se calla mientras se duerme** (`gpio_intr_disable`) y se le devuelve el
+  flanco de subida al despertar (`gpio_set_intr_type(POSEDGE)`, que es lo que significa el
+  RISING de `Module::setDio1Action()`). El despertar no necesita la ISR, lo dispara el bit de
+  wakeup del pin; y así se evita de raíz la tormenta de interrupciones por nivel. El aviso no
+  se pierde porque `radioLoop()` rearma leyendo el nivel de DIO1 en cada vuelta.
+- **No se duerme si hay un ordenador en el USB** (`hal::usbConectado()`, con histéresis).
+  Sirve para no perder una consola **ya abierta**; NO es una red de seguridad para flashear
+  — ver la fila de esptool en la tabla de trampas.
+- **No se duerme encima de una ráfaga NMEA**, que es un efecto colateral que no estaba
+  previsto y que habría matado en silencio los avisos de posición automáticos. Dos filas de
+  la tabla de trampas.
+- `esp_pm_configure()` **sigue sin servir**: `CONFIG_PM_ENABLE` no está activado en el
+  `sdkconfig` de Arduino-ESP32 6.12.0 para el S3, así que el light sleep automático no es una
+  opción sin recompilar el framework. No perder tiempo por ahí. `esp_light_sleep_start()` vive
+  en `esp_sleep`, no en `esp_pm`, y sí está.
+- `millis()` va sobre `esp_timer`, que sigue contando durmiendo, así que **el contador de
+  ciclo de trabajo no se descuadra**. Se desvía ~1 % porque durmiendo el reloj es el RC de
+  150 kHz del RTC: irrelevante para un presupuesto del 10 % con bloqueo duro, pero es la razón
+  de que `GPS_TRAMA_MARGEN_MS` sean 100 ms y no 30.
+- `informeEnergia()` saca residencia, número de sueños, causa del despertar y por qué NO se
+  durmió. **Sin eso el modo de fallo probable es invisible**: no se distingue "duerme y
+  ahorra" de "cree que duerme y vuelve al instante".
+- Se desactiva en compilación con `-DFT_NO_LIGHT_SLEEP`.
+
+**Pendiente de medir**: que el nodo siga oyendo la radio dormido, con dos aparatos, y cuántos
+mA ahorra de verdad. Ver `ESTADO.md`.
 
 Otras dos, por orden, cuando haya una medida real delante:
 

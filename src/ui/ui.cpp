@@ -457,6 +457,133 @@ void pantallaBrujula() {
   pieAviso();
 }
 
+// ----------------------------- mi posicion ---------------------------------
+
+// El HDOP en palabras. El numero solo no le dice nada a nadie: los valores
+// medidos en este aparato han ido de 0,6 junto a la ventana a 7,1 dentro de casa,
+// y sin la palabra al lado ninguno de los dos significa nada para quien lo lee.
+const char* palabraHdop(float h) {
+  if (h < 1.0f) return S_HDOP_EXCELENTE;
+  if (h < 2.0f) return S_HDOP_BUENO;
+  if (h < 5.0f) return S_HDOP_ACEPTABLE;
+  return S_HDOP_MALO;
+}
+
+uint16_t colorHdop(float h) {
+  if (h < 2.0f) return TFT_WHITE;
+  if (h < 5.0f) return TFT_YELLOW;
+  return TFT_ORANGE;
+}
+
+// Pantalla de posicion propia: latitud, longitud, altitud, satelites y
+// precision. No es solo diagnostico -- leer las coordenadas en voz alta por radio
+// es un uso real en el campo, y para eso los numeros van en Font2 y las
+// coordenadas con 5 decimales, que es ~1 m y es el formato que traga Google Maps.
+//
+// La mitad del valor de esta pantalla esta en el caso SIN fix: tiene que decir
+// POR QUE no lo hay. El criterio para distinguir "cableado mal" de "sin cielo" es
+// el MISMO que usan informeGps() y el aviso de la barra de estado (cero bytes
+// NMEA = UART), a proposito: tres sitios con tres criterios distintos acabarian
+// contradiciendose delante del usuario.
+void pantallaPosicion() {
+  barraEstado();
+
+  const auto& f = hal::gpsFix();
+  int y = UI_STATUSBAR_H + 4;
+  const int dy = UI_ROW_H;
+  char b[32];
+
+  // Etiqueta en Font0 a la izquierda, valor en Font2 a la derecha. El +4 de la
+  // etiqueta la centra contra los 16 px del valor.
+  auto fila = [&](const char* etiqueta, const char* valor, uint16_t color) {
+    D.setFont(&fonts::Font0);
+    D.setTextColor(0x8410);
+    D.drawString(etiqueta, 6, y + 4);
+    D.setFont(&fonts::Font2);
+    D.setTextColor(color);
+    D.setTextDatum(top_right);
+    D.drawString(valor, TFT_W - 6, y);
+    D.setTextDatum(top_left);
+    y += dy;
+  };
+
+  if (!hal::gpsEncendido()) {
+    D.setFont(&fonts::Font2);
+    D.setTextColor(0x6B4D);
+    D.setTextDatum(middle_center);
+    D.drawString(S_POS_APAGADO,   TFT_W / 2, TFT_H / 2 - 12);
+    D.drawString(S_POS_EN_AJUSTES, TFT_W / 2, TFT_H / 2 + 10);
+    D.setTextDatum(top_left);
+    pieAviso();
+    return;
+  }
+
+  if (!f.valido) {
+    // Sin fix se muestra lo que SI se sabe: los bytes NMEA (que separan un UART
+    // mal cableado de la falta de cobertura), los satelites a la vista y cuanto
+    // lleva buscando. Es la informacion con la que se decide si salir al balcon o
+    // mirar el cable.
+    const uint32_t bytes = hal::gpsBytesRecibidos();
+    const bool uart_mudo = (bytes == 0);
+
+    D.setFont(&fonts::Font2);
+    D.setTextColor(uart_mudo ? TFT_ORANGE : TFT_WHITE);
+    D.drawString(uart_mudo ? S_POS_SIN_UART : S_POS_BUSCANDO, 6, y);
+    y += dy;
+
+    if (uart_mudo) {
+      D.setFont(&fonts::Font0);
+      D.setTextColor(TFT_YELLOW);
+      D.drawString(S_POS_REVISA_UART, 6, y + 4);
+      y += dy;
+    } else if (f.satelites_vista) {
+      snprintf(b, sizeof(b), "%u %s", (unsigned)f.satelites_vista, S_POS_AL_AIRE);
+      fila(S_POS_SATS, b, TFT_WHITE);
+    }
+
+    snprintf(b, sizeof(b), "%lu B", (unsigned long)bytes);
+    fila(S_POS_NMEA, b, uart_mudo ? TFT_ORANGE : 0x8410);
+
+    snprintf(b, sizeof(b), "%lu s", (unsigned long)hal::gpsSegundosSinFix());
+    fila(S_POS_DESDE, b, 0x8410);
+
+    pieLista(S_K_TAB, 0, 1, 1);
+    pieAviso();
+    return;
+  }
+
+  snprintf(b, sizeof(b), "%.5f", (double)f.lat_e7 * 1e-7);
+  fila(S_POS_LAT, b, TFT_WHITE);
+
+  snprintf(b, sizeof(b), "%.5f", (double)f.lon_e7 * 1e-7);
+  fila(S_POS_LON, b, TFT_WHITE);
+
+  snprintf(b, sizeof(b), "%ld m", (long)f.altitud_m);
+  fila(S_POS_ALT, b, TFT_WHITE);
+
+  // "9 de 14" si el modulo manda GSV; si no, solo los usados. Nunca se etiqueta
+  // como a la vista un numero que son los usados. Y se exige vista >= usados: al
+  // arrancar llegan descoordinados y "9 de 4" quedaria absurdo.
+  if (f.satelites_vista >= f.satelites && f.satelites_vista)
+    snprintf(b, sizeof(b), "%u %s %u", (unsigned)f.satelites, S_POS_DE,
+             (unsigned)f.satelites_vista);
+  else
+    snprintf(b, sizeof(b), "%u", (unsigned)f.satelites);
+  fila(S_POS_SATS, b, TFT_WHITE);
+
+  // hdop == 0 significa "el modulo no lo ha dado todavia", no "precision
+  // perfecta": sin este caso la pantalla presumiria de excelente sin dato alguno.
+  if (f.hdop > 0.0f) {
+    snprintf(b, sizeof(b), "%.1f %s", (double)f.hdop, palabraHdop(f.hdop));
+    fila(S_POS_PRECISION, b, colorHdop(f.hdop));
+  } else {
+    fila(S_POS_PRECISION, "?", 0x8410);
+  }
+
+  pieLista(S_K_TAB, 0, 1, 1);
+  pieAviso();
+}
+
 // ------------------------------ ajustes ------------------------------------
 
 // Escala de 1 a UI_NIVELES para brillo y volumen. Se guarda el valor real y el
@@ -1041,6 +1168,7 @@ void pintar() {
       case SCR_CHAT:     pantallaChat();     break;
       case SCR_NODES:    pantallaNodos();    break;
       case SCR_COMPASS:  pantallaBrujula();  break;
+      case SCR_POSITION: pantallaPosicion(); break;
       case SCR_SETTINGS: pantallaAjustes();  break;
       default: break;
     }

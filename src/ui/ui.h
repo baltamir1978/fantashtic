@@ -1,5 +1,5 @@
 #pragma once
-// Interfaz: cuatro pantallas, una superposicion de SOS y el asistente de
+// Interfaz: cinco pantallas, una superposicion de SOS y el asistente de
 // primer arranque.
 //
 // La pantalla mide 240 x 135 pixeles, lo que deja sitio para cinco lineas de

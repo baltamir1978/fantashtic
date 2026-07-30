@@ -108,14 +108,19 @@ comodidad, sin necesidad de Fn.
 | `Tab` | cambiar de pantalla |
 | `Enter` | enviar / elegir |
 | `Backspace` | borrar |
-| **`Enter` + `ESC`, 2 segundos** | **SOS** |
+| **`ESC` + `Backspace`, 2 segundos** | **SOS** |
 | Botón **G0**, 2 segundos | SOS (secundario, ver abajo) |
+
+El SOS eran `Enter` + `ESC` y se cambió: dos teclas no se levantan nunca en el mismo
+milisegundo, así que soltando `ESC` primero quedaba `Enter` pulsado y **se enviaba la línea de
+chat** en plena emergencia. Con `ESC` + `Backspace` lo peor que puede pasar al soltar es borrar
+un carácter, y siguen estando en esquinas opuestas del teclado.
 
 Los caracteres `;` `.` `,` `/` sin Fn se escriben con normalidad.
 
 ---
 
-## Las cuatro pantallas
+## Las cinco pantallas
 
 `Tab` va rotando entre ellas. `ESC` vuelve al chat desde cualquiera.
 
@@ -146,6 +151,29 @@ Distancia y flecha hacia el nodo elegido.
 **En parado no hay rumbo real.** El Cardputer Adv lleva un BMI270, que es un acelerómetro, no
 un magnetómetro. Andando, el GPS da el rumbo y la flecha apunta de verdad; parado, apunta al
 **norte geográfico** y lo dice en pantalla. La distancia siempre es correcta.
+
+### Mi posición
+
+La hermana de la brújula: ésa dice dónde está *el otro*, ésta dónde estás *tú*. Cinco filas —
+latitud, longitud, altitud, satélites y precisión — con los números en grande, porque el uso
+real es **leer las coordenadas en voz alta por radio**.
+
+Las coordenadas van con 5 decimales, que es ~1 metro y es el formato que se pega tal cual en
+Google Maps. La precisión sale con número **y** palabra (`1.6 bueno`), porque el HDOP a secas no
+le dice nada a nadie: `<1` excelente, `1-2` bueno, `2-5` aceptable, `>5` malo.
+
+Los satélites son **dos** números cuando el módulo los da: `9 de 14` son los *usados en la
+solución* de un total *a la vista*. No es lo mismo y no se mezcla: se ven muchos y se usan los
+que dan buena geometría.
+
+Y a veces los usados salen **más** que los que se ven, lo que parece imposible y no lo es: los
+usados vienen de la trama GGA y cuentan todas las constelaciones, mientras que los «a la vista»
+vienen de `$GPGSV`, que solo habla de GPS. O sea que ese segundo número es un suelo, no un total.
+Cuando pasa (medido: 8 usados, 6 a la vista) la pantalla muestra solo el primero, en vez de un
+`8 de 6` que no significaría nada.
+
+Sin fix la pantalla dice **por qué** no lo hay, que es la mitad de para lo que sirve: si no ha
+llegado ni un byte por el UART es el cable, y si llegan bytes pero no hay solución es el cielo.
 
 ### Ajustes
 
@@ -196,7 +224,7 @@ batería.
 
 ## SOS
 
-**`Enter` + `ESC` mantenidos 2 segundos**, desde cualquier pantalla. Sale una cuenta atrás de
+**`ESC` + `Backspace` mantenidos 2 segundos**, desde cualquier pantalla. Sale una cuenta atrás de
 3 segundos: `Enter` lo envía ya, `ESC` lo cancela.
 
 Una vez lanzado se manda una ráfaga de 3 envíos separados 30 segundos, y después se repite cada
@@ -269,22 +297,34 @@ hoja de datos:
 |---|---|
 | **Reloj adaptativo** 240/80 MHz | el CPU era el mayor consumidor y estaba siempre a 240 |
 | **Tick adaptativo** 10/50 ms | menos tiempo despierto cuando solo se escucha |
-| **Ritmo del GPS** 1 Hz / 0,2 Hz | baja el caudal NMEA de ~820 a ~40 B/s |
+| **Ritmo del GPS** 1 Hz / 0,2 Hz | **mucho menos de lo que se creía, ver abajo** |
 
-Los tres están verificados en el aparato. **80 MHz es el suelo a propósito**: con el CPU a
-80/160/240 el bus APB se queda en 80 MHz, así que los divisores de SPI y los baudios del UART
+Los dos primeros están verificados en el aparato. **80 MHz es el suelo a propósito**: con el CPU
+a 80/160/240 el bus APB se queda en 80 MHz, así que los divisores de SPI y los baudios del UART
 del GPS no cambian; por debajo de 80 habría que recalcularlos.
+
+> **Corrección medida (30-jul-2026): el ritmo del GPS ahorra mucho menos de lo que decía este
+> README.** Aquí se prometía bajar el caudal NMEA de ~820 a ~40 B/s. Medido en el aparato, con
+> fix y sin él, pidiendo 5000 ms entre fijaciones: el caudal baja de ~630 a ~400 B/s y **las
+> tramas siguen llegando cada ~1000 ms**. El AT6668 no hace caso del `$PCAS02` más que a medias.
+> El firmware ahora **mide** ese intervalo y lo saca por consola (`rafaga cada 999 ms`) en vez de
+> darlo por supuesto.
 
 Lo que falta, por orden de impacto:
 
-1. **Medir el consumo real** con un medidor USB. Todo lo demás depende de esto.
-2. **Light sleep** — la ganancia grande. Está implementado y **desactivado a propósito**: con
-   él activo el nodo se queda sordo y mudo en cuanto la pantalla se duerme. Se compila con
-   `-DFT_LIGHT_SLEEP` para retomarlo, y hay que resolver antes por qué muere la interrupción de
-   DIO1. Ver el bloque de autonomía de `CLAUDE.md`.
-3. **Apagar el GPS de verdad.** Hoy solo se baja su ritmo: `gpsEncender(false)` cierra el UART
-   pero el AT6668 sigue siguiendo satélites. No hay comando de standby en las fuentes públicas
-   del chip, ni pin de alimentación en el Cap.
+1. **Medir el consumo real** con un medidor USB. Todo lo demás depende de esto, y sigue sin
+   haber ni una sola medida: los números de arriba son de hoja de datos.
+2. **Light sleep — probado y DESCARTADO, no simplemente pendiente.** Es la ganancia grande y no
+   se ha conseguido. Se encontró y arregló una causa real —`esp_sleep_enable_ext1_wakeup()` saca
+   el GPIO de DIO1 de la matriz digital y lo pasa al dominio RTC sin devolverlo, lo que mata a la
+   vez la interrupción de RadioLib y el rearme por nivel que hacía de red de seguridad— y con eso
+   arreglado **el nodo desenchufado se sigue quedando sordo a los 30 segundos**, además de hacer
+   crepitar el altavoz. Necesario pero no suficiente: queda otra causa sin encontrar. Está detrás
+   de `-DFT_LIGHT_SLEEP` y **no se embarca**: en un aparato cuya razón de ser es recibir un SOS,
+   dormir no puede costar la radio. Lo descartado y las pistas nuevas, en `ESTADO.md`.
+3. **Apagar el GPS de verdad.** Hoy solo se baja su ritmo, y ahora se sabe que eso ahorra poco:
+   `gpsEncender(false)` cierra el UART pero el AT6668 sigue siguiendo satélites. No hay comando de
+   standby en las fuentes públicas del chip, ni pin de alimentación en el Cap.
 4. **Parar el altavoz cuando está ocioso.** `M5.begin()` lo arranca y nadie lo para.
 
 ---
@@ -297,13 +337,14 @@ Lo que falta, por orden de impacto:
 |---|---|
 | Arranque, pantalla, teclado, microSD, NVS | ✓ |
 | Radio SX1262 | ✓ 869,525 MHz, SF11/BW250, TCXO a 1,8 V a la primera |
-| Enlace entre dos nodos | ✓ −18 a −29 dBm, SNR 6-7 a corta distancia |
+| Enlace entre dos nodos | ✓ −12 a −29 dBm, SNR 6-7 a corta distancia |
 | Cifrado y protocolo en el aire | ✓ entre dos aparatos independientes |
 | Retransmisión y ACK implícito | ✓ el contador de saltos sube 0 → 1 |
 | Los dos sentidos del enlace | ✓ |
 | Descubrimiento de nodos | ✓ nombre aprendido en 7 s desde el arranque |
-| GPS | ✓ fix con 24-25 satélites, HDOP 0,6 |
+| GPS | ✓ fix en interior; hasta 24-25 satélites y HDOP 0,6 junto a la ventana |
 | Reloj y tick adaptativos | ✓ 80 MHz sin perder radio ni GPS |
+| Light sleep | ✗ **descartado por medida**: deja el nodo sordo a los 30 s |
 
 **64 pruebas en verde en el ordenador** (`pio test -e native`): protocolo, router, ciclo de
 trabajo, criptografía, geodesia, UTF-8, tabla de nodos y los mensajes `Position` / `User` /
@@ -314,10 +355,12 @@ Lo que **no** está verificado:
 
 - **Retransmisión con tres aparatos**, la única que no se puede probar con dos. Es la que falta
   de verdad: es una función del producto.
-- **Las pantallas nuevas de ajustes** (editor, confirmaciones, información) y el **SOS por
-  teclado**: compilan y están escritas, pero no se han visto ni pulsado.
+- **La geometría de las pantallas.** Las cinco están calculadas sobre 240 × 135, no vistas. El
+  ancho de lo que puede pisarse se mide en tiempo de ejecución con `textWidth()`, pero las
+  posiciones verticales son aritmética. Afecta sobre todo a las más nuevas: ajustes (editor,
+  confirmaciones, información) y **Mi posición**.
+- **SOS de punta a punta**, incluido el atajo de teclado, y cambio de frase del grupo en caliente.
 - **GPS y brújula en exterior**, contrastando distancias contra un mapa.
-- **SOS de punta a punta** y cambio de frase del grupo en caliente.
 - **Consumo real**, y por tanto la autonomía.
 
 Detalle y orden de pruebas en `ESTADO.md`.
@@ -350,7 +393,7 @@ src/
   mesh/        history router duty nodedb        ← sin Arduino, se prueba en el PC
   util/        geo utf8                          ← sin Arduino, se prueba en el PC
   app/         orquestación, SOS, envíos periódicos, descubrimiento
-  ui/          cuatro pantallas, editor, confirmaciones, SOS, asistente
+  ui/          cinco pantallas, editor, confirmaciones, SOS, asistente
   store/       NVS (config y clave) + microSD (historial)
 ```
 

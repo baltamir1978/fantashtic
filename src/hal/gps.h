@@ -14,7 +14,15 @@ struct Fix {
   int32_t  lon_e7    = 0;
   int32_t  altitud_m = 0;
   uint32_t epoch     = 0;
+  // OJO A LA DIFERENCIA, que no es cosmetica:
+  //   satelites        los que entran en la SOLUCION, campo 7 de la trama GGA.
+  //   satelites_vista  los que se VEN, campo 3 de las tramas GSV. Puede ser
+  //                    bastante mayor: se ven muchos y se usan los que dan
+  //                    buena geometria. 0 = el modulo no manda GSV.
+  // Llamar "visibles" a los primeros seria dar un numero equivocado con una
+  // etiqueta correcta, que es peor que no darlo.
   uint8_t  satelites = 0;
+  uint8_t  satelites_vista = 0;
   float    hdop      = 0.0f;
   float    rumbo     = 0.0f;   // solo fiable en movimiento
   float    velocidad_kmh = 0.0f;
@@ -53,5 +61,21 @@ uint32_t gpsBytesRecibidos();
 // La trama se construye con el checksum calculado, no escrito a mano: una
 // constante mal copiada haria que el modulo ignore el comando en silencio.
 void gpsRitmo(uint16_t ms_entre_fijaciones);
+
+// Milisegundos que se puede dormir sin comerse la siguiente rafaga NMEA.
+//   UINT32_MAX  no hay nada que respetar (GPS apagado, o callado del todo)
+//   0           esta hablando ahora, o esta a punto: NO dormir
+//   n           se puede dormir hasta n ms
+//
+// En light sleep el APB esta parado y el UART no recoge nada, asi que lo que
+// llegue durmiendo se pierde y la trama sale con el checksum roto. El modulo es
+// un reloj estable, asi que se mide donde empezo la ultima rafaga y se despierta
+// GPS_TRAMA_MARGEN_MS antes de la siguiente. Ver GPS_TRAMA_* en config.h.
+uint32_t gpsMsHastaProximaTrama();
+
+// Intervalo MEDIDO entre el comienzo de dos rafagas. No es lo mismo que lo que
+// se pidio con gpsRitmo(): el modulo no hace caso del todo. Se saca por consola
+// en informeGps() porque es el numero que dice si el ahorro del ritmo es real.
+uint32_t gpsIntervaloTramaMs();
 
 }  // namespace hal

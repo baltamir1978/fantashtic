@@ -12,7 +12,7 @@ Abre esta carpeta con Claude Code. `CLAUDE.md` se lee solo; pídele que lea tamb
 
 ## Primer mensaje sugerido
 
-> Lee `CLAUDE.md` y `ESTADO.md`. El firmware está completo y con 63 tests en verde en el
+> Lee `CLAUDE.md` y `ESTADO.md`. El firmware está completo y con 64 tests en verde en el
 > ordenador, pero nunca se ha ejecutado en el aparato. Voy a flashearlo por primera vez.
 >
 > Empecemos por compilar: `pio run`. Si hay errores, arréglalos de uno en uno y explícame
@@ -27,7 +27,7 @@ Abre esta carpeta con Claude Code. `CLAUDE.md` se lee solo; pídele que lea tamb
 ## Reglas para la sesión
 
 1. **Los tests son la red de seguridad.** Antes y después de tocar `proto/`, `mesh/` o
-   `util/`: `pio test -e native`. Deben seguir siendo 63 en verde. Si un test falla, mirar
+   `util/`: `pio test -e native`. Deben seguir siendo 64 en verde. Si un test falla, mirar
    primero si el equivocado es el test — ya pasó dos veces.
 
 2. **Una cosa cada vez.** El orden de pruebas de `ESTADO.md` está pensado para que cada fallo

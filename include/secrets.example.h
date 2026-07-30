@@ -4,7 +4,7 @@
 // commitearse nunca.
 //
 // El archivo es OPCIONAL: config.h lo incluye con __has_include, asi que un
-// clon recien hecho compila y pasa los 63 tests sin crearlo.
+// clon recien hecho compila y pasa los 64 tests sin crearlo.
 //
 // La frase del grupo NO se pone aqui. Se teclea en el asistente de primer
 // arranque y la clave derivada se guarda en NVS del aparato.

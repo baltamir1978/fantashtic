@@ -112,12 +112,49 @@
 //  GPS  -  ATGM336H-6N (AT6668) en el Cap LoRa-1262, UART1
 //
 //  RX del ESP = 15 (recibe del TX del GPS), TX del ESP = 13.
-//  La tabla del bus EXT de M5 dice lo contrario; se contradice con la pagina
-//  del Cap y con variant.h, que coinciden entre si. TODO(hw): confirmar.
+//  CONFIRMADO en el aparato el 29-jul-2026: con estos pines llegan los NMEA y
+//  se consigue fix. La tabla del bus EXT de M5 los da al reves y esta mal; la
+//  pagina del Cap y variant.h coinciden entre si y tienen razon.
 // =============================================================================
 #define PIN_GPS_RX        15
 #define PIN_GPS_TX        13
 #define GPS_BAUD          115200
+
+// Ventana de las tramas NMEA, para no dormir encima de ellas.
+//
+// POR QUE HACE FALTA: en light sleep el APB esta parado, asi que el UART no
+// mete en su FIFO lo que llegue mientras dormimos: esos bytes se PIERDEN. El
+// modulo suelta todas sus tramas de golpe (una rafaga) y se calla hasta la
+// siguiente fijacion. Si se duerme a ciegas en trozos de TICK_IDLE_MS, casi
+// todas las rafagas caen dentro de un sueño, el checksum de cada trama falla y
+// el aparato deja de tener posicion justo cuando nadie mira -- que es
+// exactamente cuando importa, porque es cuando se emiten los avisos de
+// posicion automaticos.
+//
+// La solucion es predecir: el modulo es un reloj muy estable, asi que basta
+// medir el comienzo de la ultima rafaga y despertar un poco antes de la
+// siguiente. Despierto no se pierde nada, porque la ISR del UART sigue
+// llenando el buffer de anillo aunque el bucle este en un delay().
+// Y se predice con el intervalo MEDIDO, no con el pedido en $PCAS02: medido el
+// 30-jul-2026, el modulo no hace caso del todo (con 5000 ms pedidos el caudal se
+// queda en ~400 B/s en vez de bajar a ~40). Ver g_intervalo_ms en hal/gps.cpp.
+#define GPS_TRAMA_QUIETO_MS   40   // silencio que separa una rafaga de la siguiente
+#define GPS_TRAMA_MARGEN_MS  100   // se despierta esto antes de la rafaga prevista
+                                   // (100 y no 30: durmiendo, millis() va sobre el
+                                   //  RC de 150 kHz del RTC y se desvia ~1 %)
+#define GPS_TRAMA_MIN_INTERVALO_MS 200  // por debajo de esto es una rafaga partida,
+                                        // no una fijacion nueva
+
+// =============================================================================
+//  BOTON  -  el del modulo StampS3A, no hay ninguno en el chasis
+//
+//  Es el MISMO del modo descarga, asi que mantenerlo mientras se enciende el
+//  aparato arranca el bootloader con la pantalla muerta. Por eso el SOS tiene
+//  ademas un atajo de teclado (ESC+DEL), que es la via principal.
+//  M5Unified lo lee como BtnA; aqui se necesita el numero para armarlo como
+//  fuente de despertar del light sleep.
+// =============================================================================
+#define PIN_BTN            0
 
 // =============================================================================
 //  VARIOS
@@ -262,6 +299,16 @@
 // deberia notarse; si se nota, este es el numero que hay que bajar.
 #define TICK_IDLE_MS          50
 
+// Sueño minimo que merece la pena. Entrar y salir del light sleep cuesta un par
+// de milisegundos a pleno reloj (reprogramar relojes, restaurar perifericos), asi
+// que por debajo de esto se gasta mas de lo que se ahorra y se usa delay().
+#define SLEEP_MIN_MS          10
+
+// Cuanto se sigue dando por presente un ordenador despues del ultimo SOF del USB.
+// Los SOF paran en cuanto el host suspende el puerto, asi que sin este colchon un
+// hueco de milisegundos dormiria el nodo con el cable puesto. Ver hal::usbConectado().
+#define USB_HISTERESIS_MS     15000
+
 // Frecuencias del CPU. 240 MHz solo cuando hay que reaccionar rapido.
 //
 // 80 es el SUELO A PROPOSITO: en el ESP32-S3, con el CPU a 80, 160 o 240 MHz el
@@ -272,7 +319,7 @@
 #define CPU_MHZ_LENTO         80
 
 #define SCREEN_TIMEOUT_MS     30000
-#define SOS_HOLD_MS           2000   // mantener el boton G0, o ENTER+ESC a la vez
+#define SOS_HOLD_MS           2000   // mantener el boton G0, o ESC+DEL a la vez
 #define SOS_COUNTDOWN_MS      3000
 #define SOS_BURST_INTERVAL_MS 30000  // 3 envios separados 30 s
 #define SOS_BURST_COUNT        3
@@ -305,10 +352,18 @@
 #define VOLUMEN_MIN           60   // sin silencio: la alarma del SOS debe oirse
 #define VOLUMEN_MAX          240
 
+// Pantallas de la rotacion del TAB, en el orden en que se recorren.
+//
+// POSITION va justo detras de COMPASS porque son la misma pregunta al reves: la
+// brujula dice donde esta EL OTRO, esta dice donde estoy YO. Y va en la rotacion
+// y no escondida detras de un ENTER porque leer las coordenadas en voz alta por
+// radio es un uso real en el campo, con prisa, y ahi hace falta llegar de un
+// toque. El coste es una pantalla mas de ciclo para todo el mundo.
 enum ft_screen_t {
   SCR_CHAT = 0,
   SCR_NODES,
   SCR_COMPASS,
+  SCR_POSITION,
   SCR_SETTINGS,
   SCR_COUNT
 };

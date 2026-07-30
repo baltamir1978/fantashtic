@@ -88,7 +88,7 @@ void pantallaFallo() {
 // pantalla se queda muerta, que es justo la ruta facil a un estado roto que la
 // restriccion nº 8 prohibe. Hace falta una alternativa desde el teclado.
 void atenderBoton() {
-  // Dos gestos, la misma regla: mantener 2 segundos. El teclado (ENTER+ESC) es
+  // Dos gestos, la misma regla: mantener 2 segundos. El teclado (ESC+DEL) es
   // la via principal; G0 se queda como secundaria porque es el boton del modo
   // descarga y no es un buen disparador de emergencia (ver deuda en CLAUDE.md).
   if (M5Cardputer.BtnA.isPressed() || hal::keysSosCombo()) {
@@ -155,9 +155,49 @@ uint32_t tickMs() {
   return TICK_IDLE_MS;
 }
 
+// El final de cada vuelta: o light sleep, o delay().
+//
+// Light sleep SOLO con la pantalla apagada y la radio ociosa. Con la pantalla
+// encendida se usa delay() porque es cuando alguien esta mirando y la latencia se
+// nota. (Lo de "y es cuando se esta depurando" ya no hace falta ponerlo aqui: de
+// eso se ocupa hal::usbConectado(), que impide dormir con un ordenador enchufado.)
+//
+// El tope de sueño lo pone el GPS: durmiendo, el UART no recoge nada y una rafaga
+// NMEA a medias es una trama con el checksum roto. Ver gpsMsHastaProximaTrama().
+void descansar() {
+  const uint32_t t = tickMs();
+
+  if (haciendoFalta() || !radio::radioOciosa() || !hal::sleepDisponible()) {
+    delay(t);
+    return;
+  }
+
+  const uint32_t tope = hal::gpsMsHastaProximaTrama();
+  if (tope == 0) {                  // el GPS esta hablando: hay que oirlo entero
+    hal::sleepContarNoGps();
+    delay(t);
+    return;
+  }
+
+  // Entrar y salir del light sleep cuesta un par de milisegundos a pleno reloj:
+  // por debajo de SLEEP_MIN_MS gastaria mas que el delay que ahorra.
+  const uint32_t dormir = tope < t ? tope : t;
+  if (dormir < SLEEP_MIN_MS) { delay(dormir); return; }
+
+  hal::dormirHasta(dormir);
+}
+
 // Informe periodico de energia. Sin esto, bajar el reloj es un cambio invisible
 // que hay que creerse: asi se ve en la consola pasar a 80 MHz y a 50 ms de tick
 // cuando la pantalla se duerme, y volver a 240/10 al tocar una tecla.
+//
+// La segunda linea es la del light sleep, y es la unica forma de saber si de
+// verdad esta durmiendo. OJO A COMO SE LEE: con el cable puesto la residencia
+// SIEMPRE sera 0 %, porque hal::usbConectado() impide dormir a proposito para no
+// tumbar la consola. Los contadores siguen vivos al desenchufar y al volver a
+// enchufar (no hay reinicio al abrir el puerto), asi que el procedimiento es:
+// desenchufar, dejarlo un rato solo con bateria, volver a enchufar y leer la
+// residencia acumulada de ese rato. Ver ESTADO.md.
 void informeEnergia() {
   static uint32_t ultimo = 0;
   static uint32_t mhz_anterior = 0;
@@ -171,6 +211,27 @@ void informeEnergia() {
                 (unsigned)hal::batteryPct(), (unsigned)hal::batteryMv(),
                 mhz != mhz_anterior && mhz_anterior ? "   <-- cambio de reloj" : "");
   mhz_anterior = mhz;
+
+  // Residencia de la VENTANA, no acumulada desde el arranque: acumulada saldria
+  // siempre baja, porque incluye todo el rato que estuvo enchufado sin poder
+  // dormir. Lo que interesa es el porcentaje de AHORA.
+  static uint32_t dormido_ant = 0, t_ant = 0;
+  const auto& s = hal::sleepStats();
+  const uint32_t ahora = millis();
+  const uint32_t d_ms  = s.ms_dormido - dormido_ant;
+  const uint32_t d_t   = ahora - t_ant;
+  dormido_ant = s.ms_dormido;
+  t_ant       = ahora;
+
+  Serial.printf("  dormido: %lu%% de los ultimos %lu s  (%lu veces, %lu ms en total)"
+                "  desperto: %lu gpio / %lu reloj"
+                "  sin dormir: %lu usb / %lu gps / %lu dio1%s\n",
+                (unsigned long)(d_t ? d_ms * 100UL / d_t : 0), (unsigned long)(d_t / 1000),
+                (unsigned long)s.veces, (unsigned long)s.ms_dormido,
+                (unsigned long)s.desp_gpio, (unsigned long)s.desp_timer,
+                (unsigned long)s.no_usb, (unsigned long)s.no_gps,
+                (unsigned long)s.no_dio1,
+                hal::usbConectado() ? "   <-- USB conectado: no duerme a proposito" : "");
 }
 
 // Volcado de la tabla de nodos: es EXACTAMENTE lo que pinta la pantalla 2, asi
@@ -211,9 +272,13 @@ void informeGps() {
   ultimo = millis();
 
   const auto& f = hal::gpsFix();
-  Serial.printf("GPS: %lu bytes NMEA, %u sat, %s",
+  // El intervalo MEDIDO entre rafagas va aqui porque es el numero que decide dos
+  // cosas: si el ahorro de gpsRitmo() es real, y cuanto puede dormir el light
+  // sleep sin comerse una trama.
+  Serial.printf("GPS: %lu bytes NMEA, %u/%u sat, rafaga cada %lu ms, %s",
                 (unsigned long)hal::gpsBytesRecibidos(),
-                (unsigned)f.satelites,
+                (unsigned)f.satelites, (unsigned)f.satelites_vista,
+                (unsigned long)hal::gpsIntervaloTramaMs(),
                 f.valido ? "CON FIX" : "sin fix");
   if (f.valido) {
     Serial.printf(" %.5f,%.5f  alt %ld m  hdop %.1f",
@@ -370,9 +435,9 @@ void loop() {
   informeEnergia();
   informeNodos();
 
-  // Mientras ENTER+ESC esten pulsados a la vez NO se procesan teclas: ese es el
-  // gesto del SOS, y dejarlo pasar haria que el ENTER confirmase la cuenta atras
-  // en el mismo instante de armarla, sin ventana para cancelar.
+  // Mientras ESC+DEL esten pulsados a la vez NO se procesan teclas: ese es el
+  // gesto del SOS, y dejarlo pasar haria que el DEL se fuera comiendo la linea de
+  // chat durante los 2 s que hay que mantener.
   hal::Evento ev;
   if (!hal::keysSosCombo() && hal::keysPoll(&ev)) {
     if (ui::tecla(ev)) ui::pintar();
@@ -385,13 +450,5 @@ void loop() {
   ajustarRitmoGps();
   ajustarReloj();
 
-  // Light sleep SOLO con la pantalla apagada y la radio ociosa. Con la pantalla
-  // encendida se usa delay(), por dos razones: es cuando alguien esta mirando y
-  // la latencia se nota, y es cuando se esta depurando -- el light sleep tumba el
-  // USB-Serial-JTAG y la consola se pierde.
-  const uint32_t t = tickMs();
-  if (!haciendoFalta() && radio::radioOciosa() && hal::sleepDisponible())
-    hal::dormirHasta(t);
-  else
-    delay(t);
+  descansar();
 }
