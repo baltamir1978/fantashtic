@@ -24,7 +24,10 @@
 #  endif
 #endif
 
-#define FT_VERSION        "0.1.0"
+// Tiene que coincidir con la etiqueta de la release publicada. Si no, el aparato
+// imprime por consola y muestra en Informacion una version que no corresponde a
+// ningun binario liberado, y deja de haber forma de saber que lleva dentro.
+#define FT_VERSION        "0.3.0"
 #define FT_NOMBRE         "Fantashtic"
 
 // =============================================================================
