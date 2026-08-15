@@ -39,6 +39,12 @@ uint32_t g_prox_nodeinfo = 0;
 // respuestas indefinidamente.
 bool g_nodeinfo_pide = true;
 uint32_t g_prox_telemetry = 0;
+
+// Latido de presencia. Va aparte de la telemetria periodica aunque lleve los
+// mismos datos, porque responde a otra pregunta: la telemetria informa (bateria,
+// uso de aire) y el latido solo dice "sigo aqui". Por eso sale cada minuto en vez
+// de cada diez y por eso NO se retransmite: ver HEARTBEAT_* en config.h.
+uint32_t g_prox_latido = 0;
 uint32_t g_ultima_pos_ms = 0;
 int32_t  g_ultima_lat = 0, g_ultima_lon = 0;
 bool     g_hubo_pos = false;
@@ -60,8 +66,11 @@ size_t         claveLen()  { return PSK_LEN; }
 // Devuelve el id del paquete, o 0 si no se pudo enviar. El id hace falta para
 // asociar el mensaje con su ACK implicito, y hay que registrarlo DESPUES de
 // guardar el mensaje: al reves se le pega al mensaje anterior.
+// 'hops' a -1 usa el limite de saltos configurado. Se pasa a 0 para el latido:
+// un paquete que nadie retransmite mide el enlace DIRECTO y ademas no multiplica
+// el gasto de aire por el numero de vecinos.
 uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool automatico,
-                    bool pedir_respuesta = false) {
+                    bool pedir_respuesta = false, int hops = -1) {
   if (!store::config().configurado) return 0;
 
   proto::Data d;
@@ -75,8 +84,9 @@ uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool autom
   c.to        = MESH_BROADCAST_ADDR;
   c.from      = g_nodo;
   c.id        = proto::generarId(esp_random());
-  c.hop_limit = store::config().hop_limit;
-  c.hop_start = store::config().hop_limit;
+  const uint8_t lim = (hops >= 0) ? (uint8_t)hops : store::config().hop_limit;
+  c.hop_limit = lim;
+  c.hop_start = lim;
   c.canal     = g_canal_hash;
 
   uint8_t aire[MESH_MAX_LORA_PAYLOAD];
@@ -104,7 +114,7 @@ void enviarNodeInfo(bool pedir_respuesta) {
   if (n) transmitir(PORTNUM_NODEINFO, b, n, true, pedir_respuesta);
 }
 
-void enviarTelemetria() {
+void enviarTelemetria(int hops = -1) {
   proto::Telemetry t;
   t.tiempo      = hal::gpsFix().epoch;
   t.bateria_pct = hal::batteryPct();
@@ -114,7 +124,7 @@ void enviarTelemetria() {
 
   uint8_t b[64];
   const size_t n = proto::codificarTelemetry(t, b, sizeof(b));
-  if (n) transmitir(PORTNUM_TELEMETRY, b, n, true);
+  if (n) transmitir(PORTNUM_TELEMETRY, b, n, true, false, hops);
 }
 
 void enviarPosicion() {
@@ -321,6 +331,10 @@ void begin(uint32_t node_num) {
   g_prox_nodeinfo  = millis() + 5000;
   g_nodeinfo_pide  = true;
   g_prox_telemetry = millis() + 30000;
+  // El primer latido va escalonado respecto a la telemetria, para no soltar dos
+  // paquetes seguidos justo al arrancar, que es cuando todos los nodos de un
+  // grupo suelen encenderse a la vez.
+  g_prox_latido    = millis() + 45000;
 }
 
 void recargarCanal() {
@@ -429,6 +443,13 @@ void loop() {
   if ((int32_t)(ahora - g_prox_telemetry) >= 0) {
     enviarTelemetria();
     g_prox_telemetry = ahora + TELEMETRY_INTERVAL_MS;
+    // El periodico cuenta como latido: no tiene sentido mandar dos paquetes
+    // iguales con segundos de diferencia solo porque los cuente otro contador.
+    g_prox_latido = ahora + HEARTBEAT_INTERVAL_MS;
+  }
+  if ((int32_t)(ahora - g_prox_latido) >= 0) {
+    enviarTelemetria(HEARTBEAT_HOPS);
+    g_prox_latido = ahora + HEARTBEAT_INTERVAL_MS;
   }
   if (tocaPosicion()) enviarPosicion();
 
@@ -476,6 +497,24 @@ bool sosResponderVoy() {
 }
 
 // --- estado -----------------------------------------------------------------
+
+bool avisoCobertura(char* out, size_t cap) {
+  if (!out || cap == 0) return false;
+  size_t cuantos = 0;
+  const mesh::Nodo* p = g_nodos.perdidoParaAvisar(millis(), LINK_FORGET_MS, &cuantos);
+  if (!p) return false;
+
+  if (cuantos == 1) {
+    char nom[8];
+    g_nodos.nombreMostrar(*p, nom, sizeof(nom));
+    snprintf(out, cap, "%s %s", S_SIN_COBERTURA, nom);
+  } else {
+    // Con dos o mas no caben los nombres en la banda de 11 px, y el numero es
+    // lo que hay que ver de un vistazo: quienes son se mira en la lista.
+    snprintf(out, cap, "%s %u %s", S_SIN_COBERTURA, (unsigned)cuantos, S_NODOS_PLURAL);
+  }
+  return true;
+}
 
 mesh::BaseNodos& nodos()      { return g_nodos; }
 uint32_t nodoPropio()         { return g_nodo; }

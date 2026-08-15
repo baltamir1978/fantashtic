@@ -295,6 +295,7 @@ void avisosDeEstado() {
   if (millis() - ultimo < 5000) return;
   ultimo = millis();
 
+  char cobertura[40] = {};
   const uint32_t esperar = radio::dutyMinutosParaLiberar();
   if (esperar) {
     char b[40];
@@ -303,6 +304,12 @@ void avisosDeEstado() {
     ui::ponerAviso(b);
   } else if (hal::batteryLow()) {
     ui::ponerAviso(S_ERR_BATERIA);
+  // Por delante del GPS y de la tarjeta a proposito: quedarse sin historial o
+  // sin posicion es una molestia, perder a alguien del grupo es el motivo por
+  // el que existe el aparato. Detras de la bateria porque un nodo con la
+  // bateria agotandose se va a llevar por delante todo lo demas.
+  } else if (app::avisoCobertura(cobertura, sizeof(cobertura))) {
+    ui::ponerAviso(cobertura);
   } else if (store::config().gps_activo &&
              hal::gpsSegundosSinFix() > GPS_NOFIX_WARN_MS / 1000) {
     ui::ponerAviso(hal::gpsBytesRecibidos() == 0 ? "GPS sin datos (UART?)" : S_ERR_GPS);

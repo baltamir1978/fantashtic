@@ -102,6 +102,10 @@ void test_unicast_para_otro_solo_se_releva() {
 void test_sin_saltos_no_se_retransmite() {
   Historial h;
   auto c = hacer(BCAST, OTRO, 14, 0);
+  // Una difusion sin saltos SE ENTREGA aunque no se releve, y de eso depende el
+  // latido de presencia: sale con HEARTBEAT_HOPS = 0 justo para que nadie lo
+  // repita y mida el enlace directo. Si esto se "optimizara" a DESCARTAR, la
+  // vigilancia de cobertura dejaria de funcionar sin que nada mas se rompiera.
   TEST_ASSERT_EQUAL_INT((int)Accion::ENTREGAR, (int)decidir(c, YO, h, true));
 
   Historial h2;

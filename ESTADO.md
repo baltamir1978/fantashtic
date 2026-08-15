@@ -2,6 +2,134 @@
 
 Documento de traspaso. `CLAUDE.md` tiene el contexto permanente; esto es lo que cambia.
 
+---
+
+## 1 de agosto de 2026 — macOS, cobertura vigilada y mensajes largos
+
+**El proyecto ya se compila y se prueba en macOS**, y es la ruta limpia: `brew install
+platformio`, `pio run` en 6 min la primera vez (se baja el toolchain) y **73 tests en verde**.
+Nada de lo de Windows aplica aquí: ni MAX_PATH, ni la unión, ni PowerShell, ni instalar un
+`g++` aparte. Ver §"Compilar" de `CLAUDE.md`. **Sin verificar en macOS**: flashear y el
+monitor serie — no ha habido ningún aparato enchufado a este ordenador.
+
+### Vigilancia de cobertura (pensada para ciudad)
+
+**El problema**: en urbano el enlace no se pierde por distancia sino por una esquina, y se
+recupera igual de rápido. Hasta ahora lo más frecuente que emitía un nodo era la telemetría
+cada 10 min, así que **se podía llevar un cuarto de hora incomunicado sin que nada lo dijera**
+— y la barra de estado contaba «activos» con una ventana de 15 minutos, que arrastraba el
+mismo retardo.
+
+**El latido**, en `app::loop()`: cada nodo emite un `Telemetry` **cada minuto** (`HEARTBEAT_INTERVAL_MS`)
+y **con `hop_limit = 0`** (`HEARTBEAT_HOPS`). Las dos decisiones tienen el mismo motivo, el aire:
+
+- A SF11/BW250 un paquete ocupa el aire ~0,5 s y el límite legal son 360 s/hora. Un latido por
+  minuto son ~30 s/h: **0,8 puntos de los 10**, un 8 % del presupuesto.
+- **Sin relevo**, porque si lo repitieran los otros tres nodos ese gasto se multiplicaría por
+  cuatro. Y de paso mide lo que hace falta: si hay enlace **directo**. Lo que llega por salto ya
+  lo cuentan los demás paquetes.
+- El periódico de 10 min cuenta como latido, para no soltar dos paquetes iguales seguidos.
+
+**Los cuatro estados** (`mesh::estadoEnlace()`, función libre y sin estado para poder probarla
+con relojes inventados):
+
+| Estado | Cuándo | Qué significa en la calle |
+|---|---|---|
+| `DIRECTO` | oído de primera mano hace < 2,5 min | todo bien |
+| `RELEVO` | sigue llegando, pero solo por salto | **el aviso útil**: se perdió la vía directa y se está al borde |
+| `DEBIL` | 2,5 min callado | dos latidos perdidos |
+| `PERDIDO` | 3 min callado | se da por incomunicado |
+
+`RELEVO` es la razón de ser de todo esto: cuando el tercero que hace de puente se vaya, el
+enlace se cae de golpe, y eso se puede ver venir.
+
+**Dónde se ve** (se eligió no añadir pantalla nueva: con niños cada pantalla del TAB cuenta):
+
+- **Barra de estado**: `3/4` con el color del **peor** enlace de la tabla (verde directo,
+  amarillo por relevo, naranja flojeando, rojo perdido). Sustituye al contador de activos.
+- **Lista de nodos**: la antigüedad y los puntos de señal van en el color del estado, `1sal` se
+  pinta en amarillo cuando lo que llega viene por un tercero, y hay un **triángulo verde o rojo**
+  con la tendencia de la señal — que en ciudad importa más que el nivel, porque dice si hay que
+  pararse a mandar el mensaje ya o se puede seguir andando. El pie dice el estado **en palabras**
+  para el nodo seleccionado, que es lo que da leyenda a los colores.
+- **Aviso en la banda inferior**: «Sin cobertura: PONS», por delante del GPS y de la tarjeta y
+  por detrás de la batería. Sin sonido, por decisión expresa.
+
+**La tendencia** es una media exponencial de un cuarto sobre el SNR, con histéresis de 3 dB
+(`LINK_SNR_HIST_DB`): sin ella la flecha cambiaría de sentido en cada latido, porque el SNR de
+un enlace quieto ya baila un par de dB solo.
+
+**Nada de esto avisa para siempre.** Pasada una hora (`LINK_FORGET_MS`) un nodo callado deja de
+contar en la barra y de generar aviso: un aparato apagado a propósito no puede dejar una alarma
+encendida, que es la misma razón por la que se quitó el aviso del conmutador de antena. Se sigue
+viendo en la lista, que es donde se mira el histórico.
+
+**16 tests nuevos** (64 → 80), todos con relojes inyectados: los saltos de estado tardan tres
+minutos en ocurrir de verdad. Se ha dejado además constancia en `test_sin_saltos_no_se_retransmite`
+de que **de ese caso depende el latido**: si alguien "optimizara" el router para descartar las
+difusiones con `hop_limit = 0`, la vigilancia dejaría de funcionar sin que nada más se rompiera.
+
+**⚠ Modo de fallo que hay que conocer**: el latido sale como envío automático, así que por encima
+de `DUTY_SOFT_PCT` (8 %) se corta igual que los demás automáticos, y los nodos empezarían a verse
+«perdidos» estando al lado. Con 0,8 puntos de gasto propio eso pide muchísimo tráfico de chat,
+pero si algún día se sube el ritmo del latido, este límite es lo primero que hay que mirar.
+
+**⚠ Sin ver con los ojos, y aquí hace falta salir a la calle.** Lo que hay que comprobar:
+
+1. Dos nodos juntos: la barra tiene que decir `1/1` en verde y la lista `directo`.
+2. Apagar uno: a los 3 min el otro debe decir `0/1` en rojo y sacar «Sin cobertura». Al volver a
+   encenderlo, verde otra vez en menos de un minuto.
+3. **La prueba de ciudad**: alejarse doblando esquinas y mirar si la tendencia baja **antes** de
+   perder el enlace. Es lo único que dice si el aviso llega a tiempo de servir para algo.
+4. Con tres aparatos, comprobar que el estado pasa a `RELEVO` (amarillo) cuando solo se llega por
+   el de en medio. Esta es la que necesita el tercer aparato y la que valida la idea entera.
+5. Que el gasto de aire medido cuadre: la barra tiene el porcentaje de ciclo de trabajo al lado.
+
+### Los mensajes largos ya no se pierden
+
+**El fallo**: el chat pintaba **un mensaje = una fila** y truncaba a 22 caracteres, así que de
+un mensaje de 180 bytes se leía el primer cuarto y **el resto no era alcanzable desde el
+aparato**. Y los 22 caracteres eran una cuenta sobre "unos 8 px por carácter" cuando **Font2 es
+proporcional**: `MMMM…` se salía de la pantalla y `iiii…` dejaba media fila vacía.
+
+**El arreglo**, en dos piezas:
+
+- **`util/wrap.{h,cpp}`** — `util::envolver()` trocea un texto en líneas que quepan en un ancho
+  **en píxeles**. Corta por espacios y, si una palabra sola no cabe (una URL, un nombre
+  pegado), la parte por carácter **sin romper el UTF-8**. La medida entra como función
+  (`MedirFn`), y eso no es adorno: `util/` no depende de Arduino, así que el troceador se prueba
+  en el ordenador con una regla falsa mientras el aparato le pasa `D.textWidth()`.
+  **9 tests nuevos** (64 → 73), incluidos el que comprueba que no se pierde ni un carácter y el
+  que exige que los cortes de un texto con eñes sigan siendo UTF-8 válido.
+- **`ui.cpp`** — `componerChat()` arma la pantalla por **líneas** y no por mensajes, de abajo
+  arriba, y `pantallaChat()` la pinta al revés. El nombre del remitente y la marca de estado
+  van **solo en la primera línea**; las continuaciones se alinean con la columna del texto
+  (x=58), que es lo que hace que un mensaje largo se lea como un párrafo y no como tres
+  mensajes seguidos.
+
+**Dos consecuencias que conviene saber:**
+
+1. **El scroll del chat cuenta ahora líneas, no mensajes**, y su tope sale de la propia
+   composición (`chatHayMasArriba()`) en vez de restar `numMensajes() - chatVisibles()`. Con la
+   resta, en cuanto un mensaje ocupaba dos filas el principio del historial dejaba de
+   alcanzarse — el mismo fallo que ya se arregló una vez al pasar a Font2, que habría vuelto
+   por otra puerta.
+2. **La línea de entrada muestra la cola de lo escrito, no el principio.** Iba por un
+   `snprintf` a 45 bytes, así que al pasar de una pantalla el cursor se quedaba fuera y se
+   escribía a ciegas. Reusa `colaQueCabe()`, que ya hacía esto en el editor de ajustes (se ha
+   movido de sitio en el archivo para que la vean los dos).
+
+**⚠ Sin ver con los ojos.** Compila (RAM 15,4 %, flash 20,0 %) y los 73 tests pasan, pero
+**nadie ha mirado la pantalla**: no había aparato conectado. Qué hay que comprobar:
+
+- Un mensaje de 180 bytes: que se lea entero repartido en filas, que no se pise con el nombre
+  y que las continuaciones queden alineadas.
+- Que el scroll llegue **hasta el primer mensaje** del historial y no se pase.
+- Un mensaje de una sola palabra larguísima: que se parta y no desaparezca.
+- Un mensaje con acentos y emoji justo en el corte: que no salga basura (es lo que los tests
+  cubren en el ordenador, pero la fuente del aparato es la que manda).
+- Escribir 60 caracteres y ver que el cursor sigue a la vista.
+
 **Última actualización**: 30 de julio de 2026, **segunda sesión con hardware**. Lo de hoy:
 pantalla de posición propia, SOS por teclado a **ESC+DEL**, y el **light sleep descartado por
 medida** (se arregló una causa real y no bastó: sigue quedándose tonto a los 30 s). **64 tests en
@@ -719,7 +847,8 @@ interruptor **OFF** → mantener **G0** → dar corriente → soltar. Verificado
 | 10 | Ajustes, asistente de primer arranque, PBKDF2 | escrita · tests incluidos arriba |
 | 11 | Acabado | pendiente, después de verificar |
 
-**64 tests en verde** en cuatro suites: `test_proto`, `test_mesh`, `test_util`, `test_msgs`.
+**80 tests en verde** en cuatro suites: `test_proto`, `test_mesh`, `test_util`, `test_msgs`.
+Los 16 últimos son del 1-ago-2026: troceado de líneas del chat y vigilancia del enlace.
 
 ### Qué significa "verificado" aquí
 

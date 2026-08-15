@@ -57,11 +57,82 @@ Nodo* BaseNodos::visto(uint32_t num, uint32_t ahora_ms, int16_t rssi,
     n->bateria = 255;            // desconocida hasta que llegue telemetria
   }
 
+  // La tendencia se calcula ANTES de meter la muestra nueva en la media: lo que
+  // interesa es si este paquete llega mejor o peor que como venia llegando. Con
+  // histeresis, porque el SNR de un enlace quieto ya baila un par de dB solo y
+  // sin ella la flecha cambiaria de sentido en cada latido.
+  if (n->hay_media) {
+    if      (snr > n->snr_medio + LINK_SNR_HIST_DB) n->tendencia = 1;
+    else if (snr < n->snr_medio - LINK_SNR_HIST_DB) n->tendencia = -1;
+    else                                            n->tendencia = 0;
+    // Media exponencial de un cuarto: tres partes de lo que habia y una de lo
+    // que llega. Sin divisiones en coma flotante y sin guardar un historico,
+    // que aqui no cabe (16 nodos, sin PSRAM).
+    n->snr_medio = (int8_t)(((int)n->snr_medio * 3 + snr) / 4);
+  } else {
+    n->snr_medio = snr;
+    n->hay_media = true;
+    n->tendencia = 0;
+  }
+
   n->visto_ms = ahora_ms;
   n->rssi     = rssi;
   n->snr      = snr;
   n->saltos   = saltos;
+  // 'directo_ms' solo lo mueve un paquete oido de primera mano. Es lo que
+  // permite distinguir "te oigo" de "me llega tu voz por un tercero", que en
+  // ciudad es el aviso de que el enlace se esta yendo.
+  if (saltos == 0) n->directo_ms = ahora_ms;
   return n;
+}
+
+Enlace estadoEnlace(const Nodo& n, uint32_t ahora_ms) {
+  // Un nodo recien creado, o un reloj que ha ido hacia atras, no se declara
+  // perdido: no hay dato, que no es lo mismo que no hay enlace.
+  if (!n.usado || ahora_ms < n.visto_ms) return Enlace::DIRECTO;
+
+  const uint32_t callado = ahora_ms - n.visto_ms;
+  if (callado >= LINK_LOST_MS) return Enlace::PERDIDO;
+  if (callado >= LINK_WEAK_MS) return Enlace::DEBIL;
+
+  // Sigue llegando. La pregunta es por donde.
+  if (n.directo_ms == 0 || ahora_ms < n.directo_ms) return Enlace::RELEVO;
+  return (ahora_ms - n.directo_ms) >= LINK_LOST_MS ? Enlace::RELEVO
+                                                   : Enlace::DIRECTO;
+}
+
+size_t BaseNodos::conectados(uint32_t ahora_ms) const {
+  size_t n = 0;
+  for (size_t i = 0; i < MAX_NODES; i++)
+    if (tabla_[i].usado && estadoEnlace(tabla_[i], ahora_ms) != Enlace::PERDIDO) n++;
+  return n;
+}
+
+Enlace BaseNodos::peorEnlace(uint32_t ahora_ms, uint32_t olvidar_ms) const {
+  Enlace peor = Enlace::DIRECTO;
+  for (size_t i = 0; i < MAX_NODES; i++) {
+    if (!tabla_[i].usado) continue;
+    if (ahora_ms - tabla_[i].visto_ms >= olvidar_ms) continue;
+    const Enlace e = estadoEnlace(tabla_[i], ahora_ms);
+    if ((uint8_t)e > (uint8_t)peor) peor = e;
+  }
+  return peor;
+}
+
+const Nodo* BaseNodos::perdidoParaAvisar(uint32_t ahora_ms, uint32_t olvidar_ms,
+                                         size_t* cuantos) const {
+  const Nodo* primero = nullptr;
+  size_t n = 0;
+  for (size_t i = 0; i < MAX_NODES; i++) {
+    const Nodo& x = tabla_[i];
+    if (!x.usado) continue;
+    if (estadoEnlace(x, ahora_ms) != Enlace::PERDIDO) continue;
+    if (ahora_ms - x.visto_ms >= olvidar_ms) continue;   // apagado, no perdido
+    if (!primero) primero = &x;
+    n++;
+  }
+  if (cuantos) *cuantos = n;
+  return primero;
 }
 
 void BaseNodos::ponerNombres(uint32_t num, const char* largo, const char* corto) {

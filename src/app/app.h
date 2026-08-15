@@ -32,6 +32,12 @@ uint8_t   sosSegundosRestantes();
 uint32_t  sosNodoOrigen();     // quien lo envio, si es uno recibido
 bool      sosResponderVoy();   // envia "Voy hacia ti" al origen
 
+// --- cobertura ---------------------------------------------------------------
+// Texto del aviso de cobertura para la banda inferior, o false si no hay nada
+// que decir. Se compone aqui y no en la interfaz porque el criterio (a quien se
+// da por perdido y a quien se olvida) es de la aplicacion, no del dibujado.
+bool avisoCobertura(char* out, size_t cap);
+
 // --- estado ------------------------------------------------------------------
 mesh::BaseNodos& nodos();
 uint32_t  nodoPropio();

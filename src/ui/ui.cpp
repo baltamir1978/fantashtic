@@ -17,6 +17,7 @@
 #include "strings.h"
 #include "util/geo.h"
 #include "util/utf8.h"
+#include "util/wrap.h"
 
 #define D M5Cardputer.Display
 
@@ -124,11 +125,26 @@ void barraEstado() {
   }
   x += 28;
 
+  // Cuantos del grupo siguen al alcance. Antes era un solo numero con ventana de
+  // 15 minutos, o sea que un nodo podia llevar un cuarto de hora incomunicado y
+  // seguir contando: en ciudad eso es enterarse tarde. Ahora es "conectados de
+  // total" con el criterio del latido (3 minutos), y el color lo pone el PEOR
+  // enlace de la tabla, que es lo que hay que mirar de reojo.
   char b[32];
-  const size_t act = app::nodos().activos(millis(), 15u * 60u * 1000u);
-  snprintf(b, sizeof(b), "%u", (unsigned)act);
-  D.setTextColor(TFT_LIGHTGREY);
-  D.drawString(b, x, UI_STATUSBAR_H / 2); x += 12;
+  const uint32_t ahora = millis();
+  const size_t vivos = app::nodos().conectados(ahora);
+  // El denominador son los vistos en la ultima hora, no los de la tabla: si no,
+  // un aparato apagado a proposito dejaria un "3/4" rojo para siempre, y una
+  // alarma que no se apaga nunca acaba enseñando a ignorar las alarmas.
+  const size_t total = app::nodos().activos(ahora, LINK_FORGET_MS);
+  snprintf(b, sizeof(b), "%u/%u", (unsigned)vivos, (unsigned)total);
+  const mesh::Enlace peor = app::nodos().peorEnlace(ahora, LINK_FORGET_MS);
+  D.setTextColor(total == 0            ? 0x6B4D
+                 : peor == mesh::Enlace::PERDIDO ? TFT_RED
+                 : peor == mesh::Enlace::DEBIL   ? TFT_ORANGE
+                 : peor == mesh::Enlace::RELEVO  ? TFT_YELLOW
+                                                 : TFT_GREEN);
+  D.drawString(b, x, UI_STATUSBAR_H / 2); x += 22;
 
   // Ciclo de trabajo: siempre visible. Si un dia bloquea la transmision, debe
   // quedar claro que es el limite legal y no una averia.
@@ -209,17 +225,107 @@ void pieLista(const char* ayuda, int sel, int total, int visibles) {
   }
 }
 
+// Trozo FINAL de 's' que cabe en 'ancho' px con la fuente activa. Al escribir
+// interesa ver lo ultimo tecleado, no el principio: la frase admite 64
+// caracteres y en Font2 eso es mas del doble del ancho de la pantalla.
+const char* colaQueCabe(const char* s, int ancho) {
+  const char* p = s;
+  while (*p && (int)D.textWidth(p) > ancho) {
+    const uint8_t l = util::longitudCaracter((uint8_t)*p);
+    p += l ? l : 1;            // sin el '? :' un byte invalido cuelga el bucle
+  }
+  return p;
+}
+
 // ------------------------------- chat --------------------------------------
 
-// Mensajes que caben en el chat. El numero de lineas que se pintan y el tope
-// del scroll TIENEN que salir los dos de aqui: al pasar el chat a Font2 se bajo
-// a 4 lineas pero el tope se quedo en 5, y eso dejaba el mensaje mas viejo del
+// Columna donde empieza el texto, a la derecha del nombre corto y de la marca
+// de estado. Las lineas de continuacion se alinean con ella: es lo que hace que
+// un mensaje largo se lea como un parrafo y no como tres mensajes distintos.
+constexpr int CHAT_TEXTO_X = 58;
+constexpr int CHAT_TEXTO_W = TFT_W - CHAT_TEXTO_X - 4;
+
+// Tope de lineas por mensaje. Con Font2, los caracteres mas anchos dan unos 12
+// por linea, asi que 180 bytes no pasan de ~15. 16 deja margen y acota el
+// buffer de la pila, que aqui importa: no hay PSRAM.
+constexpr size_t CHAT_LINEAS_MSG = 16;
+
+// Tope de lineas pintables a la vez. chatVisibles() da 4 con la pantalla
+// entera; 8 sobra y evita que un cambio de fuente o de altura desborde.
+constexpr int CHAT_LINEAS_MAX = 8;
+
+// Lineas que caben en el chat. El numero de lineas que se pintan y el tope del
+// scroll TIENEN que salir los dos de aqui: al pasar el chat a Font2 se bajo a 4
+// lineas pero el tope se quedo en 5, y eso dejaba el mensaje mas viejo del
 // historial fuera de alcance (con 6 mensajes el scroll se topaba en 1 cuando
 // hacian falta 2). Se descuentan los 22 px de la linea de entrada.
 int chatVisibles() {
   const int alto = TFT_H - (UI_STATUSBAR_H + 2) - 22 - altoAviso();
   const int n = alto / UI_ROW_H;
-  return n < 1 ? 1 : n;
+  if (n < 1) return 1;
+  return n > CHAT_LINEAS_MAX ? CHAT_LINEAS_MAX : n;
+}
+
+// Ancho real del texto. Font2 es PROPORCIONAL, asi que el ancho se mide y no se
+// cuenta: los "22 caracteres" de antes eran una cuenta sobre 8 px por caracter,
+// y con eso "MMMM..." se salia de la pantalla y "iiii..." dejaba media fila
+// vacia. Solo vale con Font2 activa, que es lo que deja puesto pantallaChat().
+int medirFont2(const char* s, size_t bytes, void*) {
+  char b[MSG_BUF_BYTES + 1];
+  if (bytes > sizeof(b) - 1) bytes = sizeof(b) - 1;
+  memcpy(b, s, bytes);
+  b[bytes] = '\0';
+  return (int)D.textWidth(b);
+}
+
+// Una linea pintable: de que mensaje sale y que trozo de su texto.
+struct LineaChat {
+  const store::Mensaje* m;
+  uint16_t ini;
+  uint16_t len;
+  bool     primera;   // lleva el nombre del remitente y la marca de estado
+};
+
+// Rellena 'out' con las lineas visibles, de la mas NUEVA a la mas vieja
+// (out[0] es la de abajo del todo). 'saltar' son lineas de historial hacia
+// atras: desde que un mensaje ocupa varias filas, el scroll cuenta lineas y no
+// mensajes, que es lo que hace que un mensaje largo se pueda leer entero.
+//
+// Devuelve cuantas ha llenado, y en 'hay_mas' si quedaba algo por encima. Ese
+// dato es el tope del scroll: calcularlo aparte obligaria a envolver los 60
+// mensajes del historial en cada pulsacion de tecla.
+int componerChat(int saltar, int visibles, LineaChat* out, bool* hay_mas) {
+  int n = 0;
+  *hay_mas = false;
+
+  for (int idx = (int)store::numMensajes() - 1; idx >= 0; idx--) {
+    const auto* m = store::mensaje((size_t)idx);
+    if (!m) continue;
+
+    util::Trozo tr[CHAT_LINEAS_MSG];
+    const int k = (int)util::envolver(m->texto, CHAT_TEXTO_W, medirFont2,
+                                      nullptr, tr, CHAT_LINEAS_MSG);
+    for (int j = k - 1; j >= 0; j--) {
+      if (saltar > 0) { saltar--; continue; }
+      if (n >= visibles) { *hay_mas = true; return n; }
+      out[n].m       = m;
+      out[n].ini     = tr[j].ini;
+      out[n].len     = tr[j].len;
+      out[n].primera = (j == 0);
+      n++;
+    }
+  }
+  return n;
+}
+
+// Si queda historial por encima de lo que se ve. Lo usa la tecla ARRIBA para
+// no dejar que el scroll se pase del principio.
+bool chatHayMasArriba() {
+  LineaChat lin[CHAT_LINEAS_MAX];
+  bool hay_mas = false;
+  D.setFont(&fonts::Font2);   // se mide con la fuente con la que se pinta
+  componerChat(g_scroll, chatVisibles(), lin, &hay_mas);
+  return hay_mas;
 }
 
 void pantallaChat() {
@@ -228,50 +334,52 @@ void pantallaChat() {
   // Font2 (16 px) en el chat: Font0 (6x8) es ilegible para los niños, que son
   // parte del publico objetivo. La barra de estado se queda en Font0, donde la
   // densidad importa mas que el tamaño. Cambiar la fuente cambia el alto de
-  // linea, asi que caben 4 mensajes en vez de 5.
+  // linea, asi que caben 4 lineas en vez de 5.
   D.setFont(&fonts::Font2);
 
-  const size_t total = store::numMensajes();
   const int visibles = chatVisibles();
   int y = UI_STATUSBAR_H + 2;
   const int dy = UI_ROW_H;
 
-  if (total == 0) {
+  if (store::numMensajes() == 0) {
     D.setTextColor(0x6B4D);
     D.drawString(S_SIN_MENSAJES, 6, y);
   }
 
-  // g_scroll cuenta mensajes hacia atras desde el final.
-  int primero = (int)total - visibles - g_scroll;
-  if (primero < 0) primero = 0;
+  LineaChat lin[CHAT_LINEAS_MAX];
+  bool hay_mas = false;
+  const int n = componerChat(g_scroll, visibles, lin, &hay_mas);
 
-  for (int i = 0; i < visibles; i++) {
-    const int idx = primero + i;
-    if (idx < 0 || idx >= (int)total) continue;
-    const auto* m = store::mensaje((size_t)idx);
-    if (!m) continue;
+  // Se compone de abajo arriba y se pinta al reves, para que las lineas queden
+  // pegadas al final del historial aunque el ultimo mensaje ocupe cuatro filas.
+  for (int i = n - 1; i >= 0; i--) {
+    const LineaChat& L = lin[i];
 
-    char nom[8];
-    nombreCorto(m->nodo, nom, sizeof(nom));
+    // El nombre y la marca solo en la primera linea del mensaje: repetirlos en
+    // cada fila haria que un mensaje largo pareciera varios seguidos.
+    if (L.primera) {
+      char nom[8];
+      nombreCorto(L.m->nodo, nom, sizeof(nom));
+      D.setTextColor(L.m->sos ? TFT_RED : colorDe(L.m->nodo));
+      D.drawString(nom, 4, y);
 
-    D.setTextColor(m->sos ? TFT_RED : colorDe(m->nodo));
-    D.drawString(nom, 4, y);
-
-    // Marca de estado de los mensajes propios.
-    if (m->nodo == 0) {
-      const char* marca = m->estado == store::EST_PROPAGADO ? "+"
-                          : m->estado == store::EST_FALLIDO ? "!" : ".";
-      D.setTextColor(m->estado == store::EST_PROPAGADO ? TFT_GREEN
-                     : m->estado == store::EST_FALLIDO ? TFT_RED : 0x6B4D);
-      D.drawString(marca, 46, y);
+      if (L.m->nodo == 0) {
+        const char* marca = L.m->estado == store::EST_PROPAGADO ? "+"
+                            : L.m->estado == store::EST_FALLIDO ? "!" : ".";
+        D.setTextColor(L.m->estado == store::EST_PROPAGADO ? TFT_GREEN
+                       : L.m->estado == store::EST_FALLIDO ? TFT_RED : 0x6B4D);
+        D.drawString(marca, 46, y);
+      }
     }
 
-    D.setTextColor(m->sos ? TFT_RED : TFT_WHITE);
-    // Con Font2 (~8 px por caracter) desde x=58 caben unos 22 caracteres.
-    char txt[32];
-    snprintf(txt, sizeof(txt), "%s", m->texto);
-    util::truncarSeguro(txt, 22);
-    D.drawString(txt, 58, y);
+    char txt[MSG_BUF_BYTES];
+    size_t len = L.len;
+    if (len > sizeof(txt) - 1) len = sizeof(txt) - 1;
+    memcpy(txt, L.m->texto + L.ini, len);
+    txt[len] = '\0';
+
+    D.setTextColor(L.m->sos ? TFT_RED : TFT_WHITE);
+    D.drawString(txt, CHAT_TEXTO_X, y);
     y += dy;
   }
 
@@ -286,9 +394,12 @@ void pantallaChat() {
     D.drawString(b, 4, base + 5);
   } else {
     D.setTextColor(TFT_WHITE);
-    char cur[46];
+    // Se muestra la COLA de lo escrito, no el principio: al pasar de una linea,
+    // un snprintf a 45 bytes dejaba el cursor fuera de la pantalla y se escribia
+    // a ciegas. Se reserva sitio para la cuenta de bytes de la derecha.
+    char cur[MSG_MAX_BYTES + 3];
     snprintf(cur, sizeof(cur), ">%s_", g_linea);
-    D.drawString(cur, 3, base + 5);
+    D.drawString(colaQueCabe(cur, TFT_W - 34), 3, base + 5);
     D.setTextDatum(top_right);
     D.setTextColor(g_linea_n > MSG_MAX_BYTES - 20 ? TFT_ORANGE : 0x6B4D);
     char c[8];
@@ -300,6 +411,21 @@ void pantallaChat() {
 }
 
 // ------------------------------- nodos -------------------------------------
+
+// Nodo que ocupa la fila 'idx' de la lista. La tabla tiene huecos, asi que el
+// indice de la pantalla y el de la tabla no son el mismo numero. Lo comparten
+// la pantalla de nodos y el salto a la brujula, para que no se puedan
+// desincronizar: el bucle estaba escrito dos veces.
+const mesh::Nodo* nodoDeFila(int idx) {
+  if (idx < 0) return nullptr;
+  int fila = 0;
+  for (size_t i = 0; i < app::nodos().capacidad(); i++) {
+    const auto* n = app::nodos().porIndice(i);
+    if (!n) continue;
+    if (fila++ == idx) return n;
+  }
+  return nullptr;
+}
 
 void pantallaNodos() {
   barraEstado();
@@ -351,31 +477,53 @@ void pantallaNodos() {
     D.setFont(&fonts::Font0);
     D.setTextDatum(middle_left);
 
+    // Estado del enlace: manda sobre el color de esta fila entera, porque es lo
+    // que hay que ver sin leer.
+    const uint32_t ahora = millis();
+    const mesh::Enlace enl = mesh::estadoEnlace(*n, ahora);
+    const uint16_t col_enl = enl == mesh::Enlace::PERDIDO ? TFT_RED
+                             : enl == mesh::Enlace::DEBIL   ? TFT_ORANGE
+                             : enl == mesh::Enlace::RELEVO  ? TFT_YELLOW
+                                                            : TFT_WHITE;
+
     // Hace cuanto se oyo.
-    const uint32_t hace_s = (millis() - n->visto_ms) / 1000;
+    const uint32_t hace_s = (ahora - n->visto_ms) / 1000;
     if (hace_s < 60)        snprintf(b, sizeof(b), "%lus", (unsigned long)hace_s);
     else if (hace_s < 3600) snprintf(b, sizeof(b), "%lum", (unsigned long)(hace_s / 60));
     else                    snprintf(b, sizeof(b), "%luh", (unsigned long)(hace_s / 3600));
-    D.setTextColor(hace_s < 900 ? TFT_LIGHTGREY : 0x6B4D);
+    D.setTextColor(enl == mesh::Enlace::DIRECTO ? TFT_LIGHTGREY : col_enl);
     D.drawString(b, x, cy);
 
-    // Calidad del enlace.
+    // Calidad del ultimo paquete oido, en el color del estado. Perdido el
+    // enlace, los puntos se quedan en rojo con el ultimo valor conocido: es un
+    // dato util (por donde iba cuando se fue) y no una medida de ahora.
     const int barras = n->snr >= 5 ? 4 : n->snr >= 0 ? 3 : n->snr >= -8 ? 2 : n->snr >= -15 ? 1 : 0;
     for (int k = 0; k < 4; k++)
-      D.fillCircle(78 + k * 6, cy, 2, k < barras ? TFT_WHITE : 0x4208);
+      D.fillCircle(78 + k * 6, cy, 2, k < barras ? col_enl : 0x4208);
+
+    // Hacia donde va la señal. Es la pregunta de ciudad: no importa tanto el
+    // nivel de ahora como si esta subiendo o cayendo, porque es lo que dice si
+    // hay que pararse a mandar el mensaje ya o se puede seguir andando.
+    if (n->tendencia > 0) {
+      D.fillTriangle(104, cy - 3, 100, cy + 2, 108, cy + 2, TFT_GREEN);
+    } else if (n->tendencia < 0) {
+      D.fillTriangle(104, cy + 3, 100, cy - 2, 108, cy - 2, TFT_RED);
+    }
 
     if (n->saltos) {
       // "sal" y no "s": con "s" se confunde con los segundos de la columna de
       // al lado, que tambien sale como "3s".
       snprintf(b, sizeof(b), "%usal", (unsigned)n->saltos);
-      D.setTextColor(0x8410);
-      D.drawString(b, 104, cy);
+      // En amarillo cuando lo que llega viene por un tercero: ahi el "1sal" no
+      // es un detalle tecnico, es el aviso de que la via directa se ha caido.
+      D.setTextColor(enl == mesh::Enlace::RELEVO ? TFT_YELLOW : 0x8410);
+      D.drawString(b, 112, cy);
     }
 
     if (n->bateria <= 100) {
       snprintf(b, sizeof(b), "%u%%", (unsigned)n->bateria);
       D.setTextColor(n->bateria < BAT_LOW_PCT ? TFT_RED : 0x8410);
-      D.drawString(b, 134, cy);
+      D.drawString(b, 140, cy);
     }
 
     y += dy;
@@ -387,7 +535,23 @@ void pantallaNodos() {
     D.setTextColor(0x6B4D);
     D.drawString(S_NADIE, 6, UI_STATUSBAR_H + 4);
   }
-  pieLista(S_K_ENTER " brujula", g_sel, total, visibles);
+
+  // El estado del nodo seleccionado, en palabras. Los colores de la fila se
+  // aprenden solos si en algun sitio se dice lo que significan, y aqui hay
+  // hueco: el pie ya existe y solo llevaba la ayuda de la tecla.
+  char ayuda[40];
+  snprintf(ayuda, sizeof(ayuda), "%s", S_K_ENTER " brujula");
+  const mesh::Nodo* sel = nodoDeFila(g_sel);
+  if (sel) {
+    const mesh::Enlace e = mesh::estadoEnlace(*sel, millis());
+    snprintf(ayuda, sizeof(ayuda), "%s  %s",
+             e == mesh::Enlace::PERDIDO ? S_LINK_PERDIDO
+             : e == mesh::Enlace::DEBIL   ? S_LINK_DEBIL
+             : e == mesh::Enlace::RELEVO  ? S_LINK_RELEVO
+                                          : S_LINK_DIRECTO,
+             S_K_ENTER " brujula");
+  }
+  pieLista(ayuda, g_sel, total, visibles);
   pieAviso();
 }
 
@@ -715,18 +879,6 @@ const char* tituloCampo(Campo c) {
     case Campo::FRASE:  return S_SET_FRASE;
     default:            return "";
   }
-}
-
-// Trozo FINAL de 's' que cabe en 'ancho' px con la fuente activa. Al escribir
-// interesa ver lo ultimo tecleado, no el principio: la frase admite 64
-// caracteres y en Font2 eso es mas del doble del ancho de la pantalla.
-const char* colaQueCabe(const char* s, int ancho) {
-  const char* p = s;
-  while (*p && (int)D.textWidth(p) > ancho) {
-    const uint8_t l = util::longitudCaracter((uint8_t)*p);
-    p += l ? l : 1;            // sin el '? :' un byte invalido cuelga el bucle
-  }
-  return p;
 }
 
 void pantallaEditor() {
@@ -1308,11 +1460,11 @@ bool tecla(const hal::Evento& ev) {
 
     case hal::Tecla::ARRIBA:
       if (g_pant == SCR_CHAT) {
-        // El tope sale de chatVisibles(), el mismo sitio del que sale el numero
-        // de lineas que se pintan. Con un 5 fijo aqui el mensaje mas viejo se
-        // quedaba fuera de alcance.
-        const int maxi = (int)store::numMensajes() - chatVisibles();
-        if (g_scroll < (maxi > 0 ? maxi : 0)) g_scroll++;
+        // El tope lo decide la propia composicion de la pantalla, que es la
+        // unica que sabe cuantas LINEAS ocupa cada mensaje. Restar mensajes
+        // como antes se quedaba corto en cuanto uno ocupaba mas de una fila, y
+        // entonces el principio del historial no se alcanzaba.
+        if (chatHayMasArriba()) g_scroll++;
       } else if (g_sel > 0) g_sel--;
       return true;
 
@@ -1347,12 +1499,9 @@ bool tecla(const hal::Evento& ev) {
         }
       } else if (g_pant == SCR_NODES) {
         // Selecciona el nodo resaltado y salta a la brujula.
-        int fila = 0;
-        for (size_t i = 0; i < app::nodos().capacidad(); i++) {
-          const auto* n = app::nodos().porIndice(i);
-          if (!n) continue;
-          if (fila == g_sel) { app::seleccionarNodo(n->num); g_pant = SCR_COMPASS; break; }
-          fila++;
+        if (const mesh::Nodo* n = nodoDeFila(g_sel)) {
+          app::seleccionarNodo(n->num);
+          g_pant = SCR_COMPASS;
         }
       } else if (g_pant == SCR_SETTINGS) {
         auto& c = store::configMutable();

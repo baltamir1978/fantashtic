@@ -13,8 +13,9 @@ Parte de los usuarios son niños, y eso gobierna casi todas las decisiones de in
 
 Verificado ejecutando código, no leyéndolo:
 
-- **64 tests en el ordenador** (`pio test -e native`): protocolo, router, ciclo de trabajo,
-  criptografía, geodesia, UTF-8, tabla de nodos y los mensajes `Position` / `User` / `Telemetry`.
+- **80 tests en el ordenador** (`pio test -e native`): protocolo, router, ciclo de trabajo,
+  criptografía, geodesia, UTF-8, troceado de líneas, vigilancia del enlace, tabla de nodos y los
+  mensajes `Position` / `User` / `Telemetry`.
 - **En el aparato**: arranque, pantalla, teclado, microSD, NVS, GPS con fix, y el **enlace de
   radio entre dos nodos a −12/−18 dBm** — o sea cripto, cabecera, router y ACK implícito en el
   aire real y en los dos sentidos.
@@ -200,6 +201,26 @@ Cosas que costaron encontrar:
 
 ## Compilar
 
+### En macOS (verificado el 1-ago-2026)
+
+Es la ruta limpia: **nada de lo de Windows aplica** —ni MAX_PATH, ni la unión, ni
+PowerShell, ni instalar un `g++` aparte, porque el de Xcode vale para el entorno
+`native`—. PlatformIO entra con `brew install platformio` y queda en el PATH:
+
+```bash
+pio run                                  # compilar  (SUCCESS, 17 s en caliente)
+pio test -e native                       # 73 casos, 73 en verde
+pio run -t upload --upload-port /dev/cu.usbmodem*
+pio device monitor -b 115200
+pio device list                          # el Cardputer sale como /dev/cu.usbmodem*
+```
+
+La primera compilación tarda ~6 min porque se baja el toolchain xtensa.
+**Sin verificar en macOS**: flashear y el monitor serie, porque no ha habido
+ningún aparato enchufado a este ordenador todavía.
+
+### En Windows
+
 **Siempre desde PowerShell y desde la unión, nunca desde la ruta real.** La ruta
 del proyecto mide 205 caracteres y el toolchain xtensa se rompe al pasar de 260
 (ver la tabla de trampas). La unión se crea una vez, sin permisos de
@@ -225,7 +246,7 @@ El Cardputer Adv aparece como **COM10**, VID:PID `303A:1001` (USB-Serial-JTAG).
 La consola solo imprime el diagnóstico al arrancar, así que para verlo hay que
 encadenar `-t upload -t monitor`: abrir el monitor a posteriori llega tarde.
 
-Tests en el ordenador (**64 casos, 64 en verde**). Necesitan un `g++` de
+Tests en el ordenador (**80 casos, 80 en verde**). Necesitan un `g++` de
 verdad; en esta máquina solo había MSVC, que rechaza los `build_flags` estilo
 GCC del entorno `native`:
 
@@ -256,7 +277,7 @@ Reglas de dependencia:
 
 - `ui/` **nunca** toca `radio/` directamente; pasa por `app/`.
 - `proto/`, `mesh/` y `util/` **no dependen de Arduino** y compilan en el ordenador. Es lo que
-  permite que existan los 64 tests. Al añadir código a esas capas, mantener la propiedad y
+  permite que existan los 80 tests. Al añadir código a esas capas, mantener la propiedad y
   actualizar `build_src_filter` del entorno `native`.
 - Todo el estado temporal se pasa por parámetro (reloj, aleatoriedad), no se lee de `millis()`
   dentro de la lógica: por eso el router y el ciclo de trabajo se pueden probar de forma
@@ -287,7 +308,9 @@ Reglas de dependencia:
 | El teclado deja de responder tras escanear el I²C | `Wire.begin(8,9)` roba el bus a M5UnifIed |
 | Cuelgue en el primer dibujo | `auto& D = M5Cardputer.Display` a nivel de fichero: orden de inicialización entre unidades de traducción |
 | No se retransmite nada | Filtrar por "¿es para mí?" en el router: en un broadcast es cierto |
+| Los nodos parecen conectados cuando ya no lo están | Los periódicos más rápidos eran de 10-15 min, así que la barra contaba «activos» con una ventana de 15 min y en ciudad se llevaba un cuarto de hora incomunicado sin enterarse. Resuelto el 1-ago-2026 con un **latido cada minuto** (`HEARTBEAT_INTERVAL_MS`) y cuatro estados en `mesh::estadoEnlace()`. El latido va con **`hop_limit = 0` a propósito**: mide el enlace DIRECTO y evita que los otros tres nodos multipliquen por cuatro el gasto de aire. **De esto depende que el router entregue las difusiones con `hop_limit = 0`** — está fijado en `test_sin_saltos_no_se_retransmite`; "optimizarlo" a DESCARTAR rompería la vigilancia sin romper nada más |
 | El estado de entrega va al mensaje anterior | `recordarIdPaquete()` marca el **último** del buffer: hay que llamarlo DESPUÉS de `anadirMensaje()` |
+| Un mensaje largo se ve a cuartos: ocupa una sola fila y el resto desaparece | `pantallaChat()` pintaba **un mensaje = una fila** y hacía `truncarSeguro(txt, 22)`. Los 22 eran además una cuenta sobre "unos 8 px por carácter", y **Font2 es proporcional**: con mayúsculas se salía de la pantalla y con `iiii` dejaba media fila vacía. Arreglado el 1-ago-2026 con `util::envolver()` (mide con `D.textWidth()`, corta por palabras, parte por carácter sin romper UTF-8) y una composición por LÍNEAS en `componerChat()`. **El scroll del chat cuenta ahora líneas, no mensajes**, y su tope sale de la propia composición (`chatHayMasArriba()`): restar mensajes se quedaba corto en cuanto uno ocupaba dos filas |
 | La pantalla de nodos dice "no se ve a nadie" hasta que alguien manda un mensaje, y entonces sale el número y no el nombre | El descubrimiento estaba **al revés**: al oír a un desconocido se anunciaba el nombre PROPIO, cuando lo que hace falta es pedir el del otro. Si el otro lado ya te conocía, su regla no se disparaba y se quedaba callado. Pasaba siempre que un nodo se reiniciaba con el otro encendido (la tabla de nodos vive en RAM). Arreglado con `Data.want_response` (campo 3 de `mesh.proto`): el NODEINFO del arranque y el que dispara oír a un desconocido lo piden, y quien lo recibe contesta con el suyo **sin** pedirla, o serían dos nodos contestándose para siempre |
 | El nodo se queda **sordo** desde el primer light sleep, y la red de seguridad no salta | `esp_light_sleep_start()` llama a `ext1_wakeup_prepare()`, que hace **`rtc_gpio_init()`** sobre cada pin de la máscara de `esp_sleep_enable_ext1_wakeup()`. Eso saca el pin de la matriz GPIO digital y lo pasa al mux del dominio RTC, **y nadie lo devuelve al despertar**. En el GPIO 4 mueren por tanto LAS DOS vías de aviso: la ISR de `setDio1Action()` y el rearme por nivel `if (digitalRead(PIN_LORA_DIO1))` de `radioLoop()`, que estaba puesto justo para el caso de perder un flanco. Por eso no se recuperaba nunca y por eso la red no saltó: las mata la misma causa. Se arregla con `gpio_wakeup_enable()` + `esp_sleep_enable_gpio_wakeup()`, que no tocan el mux — es lo que hace Meshtastic en `src/sleep.cpp` (`enableLoraInterrupt()`). Y admiten un nivel **por pin**, así que ahí sí cabe el botón, que es activo bajo |
 | Las tramas NMEA salen con el checksum roto en cuanto se activa el light sleep | Durmiendo, el APB está parado y **el UART no recoge nada**: lo que llegue se pierde. El módulo suelta sus tramas en ráfagas, así que dormir a ciegas se come casi todas y el aparato deja de tener posición justo cuando nadie mira — que es cuando se emiten los avisos de posición automáticos. Se predice la ráfaga (`hal::gpsMsHastaProximaTrama()`). Despierto no se pierde nada: la ISR del UART sigue llenando el buffer de anillo aunque el bucle esté en un `delay()` |

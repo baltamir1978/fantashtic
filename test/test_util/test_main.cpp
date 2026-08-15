@@ -12,6 +12,7 @@
 #include "proto/kdf.h"
 #include "util/geo.h"
 #include "util/utf8.h"
+#include "util/wrap.h"
 
 void setUp() {}
 void tearDown() {}
@@ -206,6 +207,129 @@ void test_utf8_invalido_se_detecta() {
   TEST_ASSERT_FALSE(util::esUtf8Valido("\x80""abc"));   // empieza por continuacion
 }
 
+// ======================= troceado en lineas (wrap) ==========================
+//
+// La regla falsa mide 10 px por CARACTER (no por byte), que es lo que hace que
+// estos casos sirvan de algo: si el troceador contara bytes, una linea con
+// acentos daria la mitad de ancho del que ocupa y los casos de abajo fallarian.
+// El display real mide con D.textWidth() sobre Font2, que es proporcional.
+
+static int medirFalso(const char* s, size_t bytes, void*) {
+  char b[256];
+  if (bytes > sizeof(b) - 1) bytes = sizeof(b) - 1;
+  memcpy(b, s, bytes);
+  b[bytes] = '\0';
+  return (int)util::contarCaracteres(b) * 10;
+}
+
+// Ninguna linea puede pasarse del ancho, salvo cuando ni un caracter cabe.
+static void comprobarQueCaben(const char* s, const util::Trozo* t, size_t n,
+                              int ancho) {
+  for (size_t i = 0; i < n; i++) {
+    if (t[i].len == 0) continue;
+    TEST_ASSERT_TRUE(medirFalso(s + t[i].ini, t[i].len, nullptr) <= ancho);
+  }
+}
+
+void test_wrap_texto_corto_una_linea() {
+  util::Trozo t[8];
+  const char* s = "hola";
+  const size_t n = util::envolver(s, 100, medirFalso, nullptr, t, 8);
+  TEST_ASSERT_EQUAL_size_t(1, n);
+  TEST_ASSERT_EQUAL_UINT16(0, t[0].ini);
+  TEST_ASSERT_EQUAL_UINT16(4, t[0].len);
+}
+
+void test_wrap_vacio_da_una_linea_vacia() {
+  util::Trozo t[8];
+  // Un trozo, no cero: la fila tiene que seguir existiendo para que se vea el
+  // nombre de quien mando el mensaje.
+  const size_t n = util::envolver("", 100, medirFalso, nullptr, t, 8);
+  TEST_ASSERT_EQUAL_size_t(1, n);
+  TEST_ASSERT_EQUAL_UINT16(0, t[0].len);
+}
+
+void test_wrap_corta_por_palabras() {
+  util::Trozo t[8];
+  const char* s = "uno dos tres cuatro cinco";   // 5 palabras, 25 caracteres
+  const size_t n = util::envolver(s, 100, medirFalso, nullptr, t, 8);
+  TEST_ASSERT_TRUE(n > 1);
+  comprobarQueCaben(s, t, n, 100);
+  // La primera linea llega hasta donde cabe entero, no a mitad de palabra.
+  TEST_ASSERT_EQUAL_STRING_LEN("uno dos", s + t[0].ini, t[0].len);
+}
+
+void test_wrap_no_pierde_texto() {
+  util::Trozo t[16];
+  const char* s = "el mensaje largo tiene que verse entero y no a cuartos";
+  const size_t n = util::envolver(s, 120, medirFalso, nullptr, t, 16);
+  comprobarQueCaben(s, t, n, 120);
+
+  // Todos los caracteres que no son espacios de corte siguen ahi, en orden.
+  char junto[128] = {};
+  size_t o = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (i) junto[o++] = ' ';
+    memcpy(junto + o, s + t[i].ini, t[i].len);
+    o += t[i].len;
+  }
+  TEST_ASSERT_EQUAL_STRING(s, junto);
+}
+
+void test_wrap_palabra_mas_larga_que_la_linea() {
+  util::Trozo t[16];
+  // Una URL o un nombre pegado no tiene espacios donde cortar.
+  const char* s = "supercalifragilisticoespialidoso";
+  const size_t n = util::envolver(s, 100, medirFalso, nullptr, t, 16);
+  TEST_ASSERT_TRUE(n > 1);
+  comprobarQueCaben(s, t, n, 100);
+  TEST_ASSERT_EQUAL_UINT16(0, t[0].ini);
+  TEST_ASSERT_EQUAL_UINT16(10, t[0].len);            // 10 caracteres de 10 px
+}
+
+void test_wrap_no_parte_caracteres_utf8() {
+  util::Trozo t[16];
+  // 12 caracteres de 2 bytes cada uno: al partir por caracter es donde se
+  // rompe el UTF-8 si el corte se hace a lo bruto por bytes.
+  const char* s = "\xC3\xB1\xC3\xB1\xC3\xB1\xC3\xB1\xC3\xB1\xC3\xB1"
+                  "\xC3\xB1\xC3\xB1\xC3\xB1\xC3\xB1\xC3\xB1\xC3\xB1";
+  const size_t n = util::envolver(s, 50, medirFalso, nullptr, t, 16);
+  TEST_ASSERT_TRUE(n > 1);
+  for (size_t i = 0; i < n; i++) {
+    char b[64];
+    memcpy(b, s + t[i].ini, t[i].len);
+    b[t[i].len] = '\0';
+    TEST_ASSERT_TRUE(util::esUtf8Valido(b));
+    TEST_ASSERT_EQUAL_UINT16(0, t[i].len % 2);       // no hay medias enes
+  }
+}
+
+void test_wrap_los_espacios_no_empiezan_linea() {
+  util::Trozo t[16];
+  const char* s = "aaaa      bbbb";
+  const size_t n = util::envolver(s, 50, medirFalso, nullptr, t, 16);
+  TEST_ASSERT_EQUAL_size_t(2, n);
+  TEST_ASSERT_EQUAL_STRING_LEN("aaaa", s + t[0].ini, t[0].len);
+  TEST_ASSERT_EQUAL_STRING_LEN("bbbb", s + t[1].ini, t[1].len);
+}
+
+void test_wrap_respeta_el_tope_de_trozos() {
+  util::Trozo t[3];
+  const char* s = "uno dos tres cuatro cinco seis siete ocho nueve diez";
+  const size_t n = util::envolver(s, 40, medirFalso, nullptr, t, 3);
+  TEST_ASSERT_EQUAL_size_t(3, n);                    // no escribe fuera
+}
+
+void test_wrap_ancho_ridiculo_avanza() {
+  util::Trozo t[8];
+  // Ni un caracter cabe. Tiene que emitir uno por linea igualmente: si no
+  // avanzara, el bucle de quien pinta no terminaria nunca.
+  const char* s = "abcd";
+  const size_t n = util::envolver(s, 1, medirFalso, nullptr, t, 8);
+  TEST_ASSERT_EQUAL_size_t(4, n);
+  TEST_ASSERT_EQUAL_UINT16(1, t[0].len);
+}
+
 // ============================ base de datos =================================
 
 void test_nodedb_alta_y_actualizacion() {
@@ -302,6 +426,107 @@ void test_nodedb_nombre_para_mostrar() {
   TEST_ASSERT_EQUAL_STRING("PAPA", b);
 }
 
+// ======================= vigilancia del enlace ==============================
+//
+// Todo con relojes inventados: los saltos de estado tardan tres minutos en
+// ocurrir de verdad, asi que sin inyectar el tiempo estos casos no se podrian
+// cubrir. Es la misma razon por la que el router y el ciclo de trabajo reciben
+// el reloj por parametro.
+
+void test_enlace_directo_y_perdido() {
+  mesh::BaseNodos db;
+  db.visto(0x1111, 1000, -40, 8, 0);            // oido de primera mano
+
+  TEST_ASSERT_EQUAL(mesh::Enlace::DIRECTO,
+                    mesh::estadoEnlace(*db.buscar(0x1111), 1000));
+  // Justo antes del umbral de "flojeando" sigue estando bien.
+  TEST_ASSERT_EQUAL(mesh::Enlace::DIRECTO,
+                    mesh::estadoEnlace(*db.buscar(0x1111), 1000 + LINK_WEAK_MS - 1));
+  TEST_ASSERT_EQUAL(mesh::Enlace::DEBIL,
+                    mesh::estadoEnlace(*db.buscar(0x1111), 1000 + LINK_WEAK_MS));
+  TEST_ASSERT_EQUAL(mesh::Enlace::PERDIDO,
+                    mesh::estadoEnlace(*db.buscar(0x1111), 1000 + LINK_LOST_MS));
+}
+
+void test_enlace_por_relevo_cuando_se_pierde_la_via_directa() {
+  mesh::BaseNodos db;
+  db.visto(0x2222, 1000, -40, 8, 0);            // directo
+  // Sigue llegando, pero ya solo por salto. El nodo NO esta perdido: esa es la
+  // diferencia que en ciudad avisa de que se esta al borde.
+  const uint32_t t = 1000 + LINK_LOST_MS + 5000;
+  db.visto(0x2222, t, -110, -12, 1);
+  TEST_ASSERT_EQUAL(mesh::Enlace::RELEVO, mesh::estadoEnlace(*db.buscar(0x2222), t));
+
+  // Y en cuanto se le vuelve a oir de primera mano, directo otra vez.
+  db.visto(0x2222, t + 1000, -50, 7, 0);
+  TEST_ASSERT_EQUAL(mesh::Enlace::DIRECTO,
+                    mesh::estadoEnlace(*db.buscar(0x2222), t + 1000));
+}
+
+void test_enlace_nunca_oido_directo_es_relevo() {
+  mesh::BaseNodos db;
+  db.visto(0x3333, 1000, -100, -5, 2);          // solo se le ha oido por salto
+  TEST_ASSERT_EQUAL(mesh::Enlace::RELEVO, mesh::estadoEnlace(*db.buscar(0x3333), 1000));
+}
+
+void test_tendencia_de_la_senal() {
+  mesh::BaseNodos db;
+  db.visto(0x4444, 1000, -60, 8, 0);
+  TEST_ASSERT_EQUAL_INT8(0, db.buscar(0x4444)->tendencia);   // sin media, sin flecha
+
+  // Un bandazo dentro de la histeresis no mueve la flecha: el SNR de un enlace
+  // quieto ya baila un par de dB solo.
+  db.visto(0x4444, 2000, -60, 6, 0);
+  TEST_ASSERT_EQUAL_INT8(0, db.buscar(0x4444)->tendencia);
+
+  db.visto(0x4444, 3000, -100, -6, 0);          // se cae de verdad
+  TEST_ASSERT_EQUAL_INT8(-1, db.buscar(0x4444)->tendencia);
+
+  db.visto(0x4444, 4000, -50, 9, 0);            // y remonta
+  TEST_ASSERT_EQUAL_INT8(1, db.buscar(0x4444)->tendencia);
+}
+
+void test_conectados_y_peor_enlace() {
+  mesh::BaseNodos db;
+  db.visto(0xAAAA, 1000, -40, 8, 0);
+  db.visto(0xBBBB, 1000, -40, 8, 0);
+  TEST_ASSERT_EQUAL_size_t(2, db.conectados(1000));
+  TEST_ASSERT_EQUAL(mesh::Enlace::DIRECTO, db.peorEnlace(1000, LINK_FORGET_MS));
+
+  // Uno sigue hablando y el otro se calla.
+  const uint32_t t = 1000 + LINK_LOST_MS;
+  db.visto(0xAAAA, t, -40, 8, 0);
+  TEST_ASSERT_EQUAL_size_t(1, db.conectados(t));
+  TEST_ASSERT_EQUAL(mesh::Enlace::PERDIDO, db.peorEnlace(t, LINK_FORGET_MS));
+}
+
+void test_perdido_para_avisar_olvida_los_apagados() {
+  mesh::BaseNodos db;
+  db.visto(0xCCCC, 1000, -40, 8, 0);            // ponerNombres no da de alta
+  db.ponerNombres(0xCCCC, "Cova", "COVA");
+
+  size_t cuantos = 0;
+  const uint32_t t = 1000 + LINK_LOST_MS;
+  const mesh::Nodo* p = db.perdidoParaAvisar(t, LINK_FORGET_MS, &cuantos);
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_EQUAL_size_t(1, cuantos);
+  TEST_ASSERT_EQUAL_STRING("COVA", p->corto);
+
+  // Pasada la hora deja de avisarse: un aparato apagado a proposito no puede
+  // dejar una alarma encendida para siempre.
+  TEST_ASSERT_NULL(db.perdidoParaAvisar(1000 + LINK_FORGET_MS, LINK_FORGET_MS, &cuantos));
+  TEST_ASSERT_EQUAL_size_t(0, cuantos);
+}
+
+void test_enlace_no_declara_perdido_sin_datos() {
+  mesh::BaseNodos db;
+  db.visto(0xDDDD, 100000, -40, 8, 0);
+  // Reloj hacia atras (millis reiniciado tras un arranque): no hay dato, que no
+  // es lo mismo que no hay enlace. Declararlo perdido seria inventarse una
+  // alarma justo al arrancar.
+  TEST_ASSERT_EQUAL(mesh::Enlace::DIRECTO, mesh::estadoEnlace(*db.buscar(0xDDDD), 50));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_sha256);
@@ -317,6 +542,15 @@ int main(int, char**) {
   RUN_TEST(test_truncado_no_parte_caracteres);
   RUN_TEST(test_emoji_ocupa_cuatro_bytes);
   RUN_TEST(test_utf8_invalido_se_detecta);
+  RUN_TEST(test_wrap_texto_corto_una_linea);
+  RUN_TEST(test_wrap_vacio_da_una_linea_vacia);
+  RUN_TEST(test_wrap_corta_por_palabras);
+  RUN_TEST(test_wrap_no_pierde_texto);
+  RUN_TEST(test_wrap_palabra_mas_larga_que_la_linea);
+  RUN_TEST(test_wrap_no_parte_caracteres_utf8);
+  RUN_TEST(test_wrap_los_espacios_no_empiezan_linea);
+  RUN_TEST(test_wrap_respeta_el_tope_de_trozos);
+  RUN_TEST(test_wrap_ancho_ridiculo_avanza);
   RUN_TEST(test_nodedb_alta_y_actualizacion);
   RUN_TEST(test_nodedb_trunca_nombres_largos);
   RUN_TEST(test_nodedb_trunca_respetando_utf8);
@@ -324,5 +558,12 @@ int main(int, char**) {
   RUN_TEST(test_nodedb_activos);
   RUN_TEST(test_nodedb_ignora_posicion_nula);
   RUN_TEST(test_nodedb_nombre_para_mostrar);
+  RUN_TEST(test_enlace_directo_y_perdido);
+  RUN_TEST(test_enlace_por_relevo_cuando_se_pierde_la_via_directa);
+  RUN_TEST(test_enlace_nunca_oido_directo_es_relevo);
+  RUN_TEST(test_tendencia_de_la_senal);
+  RUN_TEST(test_conectados_y_peor_enlace);
+  RUN_TEST(test_perdido_para_avisar_olvida_los_apagados);
+  RUN_TEST(test_enlace_no_declara_perdido_sin_datos);
   return UNITY_END();
 }

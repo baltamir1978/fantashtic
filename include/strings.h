@@ -37,6 +37,17 @@
 #define S_SIN_SENAL       "sin senal"
 #define S_NADIE           "No se ve a nadie todavia"
 
+// --- cobertura ---------------------------------------------------------------
+// "por relevo" es la etiqueta que mas importa en ciudad: significa que al otro
+// ya no se le oye de primera mano y lo que llega pasa por un tercero. No es un
+// error, es el aviso de que se esta al borde.
+#define S_LINK_DIRECTO    "directo"
+#define S_LINK_RELEVO     "por relevo"
+#define S_LINK_DEBIL      "flojeando"
+#define S_LINK_PERDIDO    "sin cobertura"
+#define S_SIN_COBERTURA   "Sin cobertura:"
+#define S_NODOS_PLURAL    "nodos"
+
 // --- brujula -----------------------------------------------------------------
 #define S_RUMBO           "rumbo"
 #define S_SIN_POSICION    "Sin posicion de ese nodo"

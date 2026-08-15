@@ -336,6 +336,37 @@
 #define NODEDB_DEBOUNCE_MS    60000
 #define GPS_NOFIX_WARN_MS     300000 // 5 min
 
+// --- vigilancia del enlace ---------------------------------------------------
+// En ciudad el enlace no se pierde por distancia sino por una esquina, y se
+// recupera igual de rapido. Con los periodicos de arriba (10 y 15 min) un nodo
+// podia llevar un cuarto de hora incomunicado sin que se notara, asi que hace
+// falta un latido propio y mas corto.
+//
+// COSTE DE AIRE, que es lo que fija el intervalo: a SF11/BW250 un paquete de
+// telemetria ocupa el aire ~0,5 s, y el limite legal son 360 s por hora (10 %).
+// Un latido por minuto son ~30 s/h: **0,8 puntos de los 10**, o sea un 8 % del
+// presupuesto. Por eso el latido NO se retransmite (HEARTBEAT_HOPS = 0): si lo
+// relevaran los otros tres nodos, ese gasto se multiplicaria por cuatro y se
+// comeria un tercio del presupuesto. Y de paso mide justo lo que interesa, que
+// es si hay enlace DIRECTO; lo que llega por relevo ya lo cuentan los demas
+// paquetes, que si van con saltos.
+//
+// OJO al modo de fallo: el latido sale como envio automatico, asi que por
+// encima de DUTY_SOFT_PCT (8 %) se corta como los demas automaticos y los nodos
+// empezarian a verse "perdidos" estando al lado. Con 0,8 puntos de gasto propio
+// eso solo puede pasar con muchisimo trafico de chat, pero si algun dia se sube
+// el ritmo del latido hay que mirar este limite antes que ningun otro.
+#define HEARTBEAT_INTERVAL_MS  60000   // "sigo aqui", una vez por minuto
+#define HEARTBEAT_HOPS         0       // sin relevo: mide el enlace directo
+#define LINK_WEAK_MS          150000   // dos latidos y medio sin oir: flojeando
+#define LINK_LOST_MS          180000   // tres latidos: se da por perdido
+#define LINK_SNR_HIST_DB       3       // histeresis de la tendencia, en dB
+// Un nodo apagado a proposito no puede dejar un aviso rojo para siempre: con
+// usuarios niños, una alarma perpetua enseña a ignorar los avisos (es la misma
+// razon por la que se quito el del conmutador de antena). Pasada esta hora deja
+// de avisarse en el pie, aunque se sigue viendo en la lista de nodos.
+#define LINK_FORGET_MS        3600000  // 1 hora
+
 // =============================================================================
 //  INTERFAZ
 // =============================================================================
