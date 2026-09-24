@@ -50,6 +50,14 @@ bool sdAppendLine(const char* path, const char* line);
 bool sdReadLastLine(const char* path, char* out, size_t out_len);
 
 // Espacio total y libre en MB. 0 si no hay tarjeta.
+// Calls 'fn' with each of the last 'max_lineas' lines of the file, oldest first,
+// without the line ending. Seeks back from the end instead of reading the whole
+// file, so boot time does not grow with the history. Lines longer than the read
+// buffer (~480 bytes) come out split; the caller must reject what it does not
+// recognise. false if there is no card or no file.
+bool sdReadTail(const char* path, size_t max_lineas,
+                void (*fn)(const char* linea, void* ctx), void* ctx);
+
 uint32_t sdTotalMB();
 uint32_t sdUsedMB();
 

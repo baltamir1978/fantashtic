@@ -10,6 +10,7 @@
 
 #include "mesh/nodedb.h"
 #include "proto/kdf.h"
+#include "util/chatlog.h"
 #include "util/geo.h"
 #include "util/utf8.h"
 #include "util/wrap.h"
@@ -527,8 +528,96 @@ void test_enlace_no_declara_perdido_sin_datos() {
   TEST_ASSERT_EQUAL(mesh::Enlace::DIRECTO, mesh::estadoEnlace(*db.buscar(0xDDDD), 50));
 }
 
+// ============================ historial en SD ================================
+
+void test_linea_chat_ida_y_vuelta() {
+  util::EntradaChat e;
+  e.epoch = 1785000000; e.nodo = 0x130C92AC; e.conv = 0x130C92AC;
+  e.tx = false; e.rssi = -97; e.snr = -12;
+  snprintf(e.texto, sizeof(e.texto), "hola\nqué tal\\ ya\tvoy");
+
+  char l[512];
+  const size_t n = util::formatearLineaChat(e, l, sizeof(l));
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_NULL(strchr(l, '\n'));               // one message, one line
+  TEST_ASSERT_EQUAL_STRING("1785000000\t130C92AC\tRX\t-97\t-12\t130C92AC\t"
+                           "hola\\nqué tal\\\\ ya voy", l);
+
+  util::EntradaChat r;
+  TEST_ASSERT_TRUE(util::analizarLineaChat(l, &r));
+  TEST_ASSERT_EQUAL_UINT32(e.epoch, r.epoch);
+  TEST_ASSERT_EQUAL_HEX32(e.nodo, r.nodo);
+  TEST_ASSERT_EQUAL_HEX32(e.conv, r.conv);
+  TEST_ASSERT_FALSE(r.tx);
+  TEST_ASSERT_EQUAL_INT(-97, r.rssi);
+  TEST_ASSERT_EQUAL_INT(-12, r.snr);
+  // The tab is the only thing that does not survive: it becomes a space.
+  TEST_ASSERT_EQUAL_STRING("hola\nqué tal\\ ya voy", r.texto);
+}
+
+void test_linea_chat_grupo_y_propia() {
+  util::EntradaChat e;
+  e.tx = true;
+  snprintf(e.texto, sizeof(e.texto), "a todos");
+  char l[256];
+  util::formatearLineaChat(e, l, sizeof(l));
+  TEST_ASSERT_EQUAL_STRING("0\t00000000\tTX\t0\t0\t*\ta todos", l);
+
+  util::EntradaChat r;
+  TEST_ASSERT_TRUE(util::analizarLineaChat(l, &r));
+  TEST_ASSERT_TRUE(r.tx);
+  TEST_ASSERT_EQUAL_UINT32(0, r.conv);
+  TEST_ASSERT_EQUAL_UINT32(0, r.nodo);
+}
+
+// Files written before direct messages existed have six columns. They still
+// read back, as group messages, and a Windows line ending is ignored.
+void test_linea_chat_formato_antiguo() {
+  util::EntradaChat r;
+  TEST_ASSERT_TRUE(util::analizarLineaChat(
+      "1785000000\t130C9A3C\tRX\t-80\t5\tya llego\\n\r\n", &r));
+  TEST_ASSERT_EQUAL_HEX32(0x130C9A3C, r.nodo);
+  TEST_ASSERT_EQUAL_UINT32(0, r.conv);
+  TEST_ASSERT_EQUAL_STRING("ya llego\n", r.texto);
+}
+
+// A power cut mid-write leaves a truncated line. It must be skipped, not turned
+// into a message with garbage fields.
+void test_linea_chat_rota_se_rechaza() {
+  util::EntradaChat r;
+  TEST_ASSERT_FALSE(util::analizarLineaChat("", &r));
+  TEST_ASSERT_FALSE(util::analizarLineaChat("\r\n", &r));
+  TEST_ASSERT_FALSE(util::analizarLineaChat("1785000000\t130C", &r));
+  TEST_ASSERT_FALSE(util::analizarLineaChat("x\t130C92AC\tRX\t0\t0\thola", &r));
+  TEST_ASSERT_FALSE(util::analizarLineaChat("1\t130C92AC\tZZ\t0\t0\thola", &r));
+  TEST_ASSERT_FALSE(util::analizarLineaChat("1\tnohex\tRX\t0\t0\thola", &r));
+  TEST_ASSERT_FALSE(util::analizarLineaChat("1\t130C92AC\tRX\t0\t0\tnohex\thola", &r));
+}
+
+// A buffer too small for the whole text cuts on a whole character and a whole
+// escape: never half an 'ñ', never a lone backslash.
+void test_linea_chat_recorte_seguro() {
+  util::EntradaChat e;
+  snprintf(e.texto, sizeof(e.texto), "ññññ\n\n");
+  const char* fijo = "0\t00000000\tRX\t0\t0\t*\t";
+  const size_t base = strlen(fijo);
+  char l[64];
+  for (size_t cap = base + 1; cap < base + 14; cap++) {
+    const size_t n = util::formatearLineaChat(e, l, cap);
+    TEST_ASSERT_TRUE(n < cap);
+    TEST_ASSERT_TRUE(util::esUtf8Valido(l));
+    TEST_ASSERT_TRUE(n == base || l[n - 1] != '\\');
+  }
+  TEST_ASSERT_EQUAL_size_t(0, util::formatearLineaChat(e, l, 8));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_linea_chat_ida_y_vuelta);
+  RUN_TEST(test_linea_chat_grupo_y_propia);
+  RUN_TEST(test_linea_chat_formato_antiguo);
+  RUN_TEST(test_linea_chat_rota_se_rechaza);
+  RUN_TEST(test_linea_chat_recorte_seguro);
   RUN_TEST(test_sha256);
   RUN_TEST(test_hmac_sha256);
   RUN_TEST(test_pbkdf2);

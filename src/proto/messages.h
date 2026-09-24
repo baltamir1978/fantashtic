@@ -73,4 +73,22 @@ struct Telemetry {
 size_t codificarTelemetry(const Telemetry& t, uint8_t* out, size_t cap);
 bool   decodificarTelemetry(const uint8_t* in, size_t len, Telemetry* t);
 
+// --- Routing (portnum 5) -----------------------------------------------------
+//   oneof variant:
+//     1 route_request  RouteDiscovery
+//     2 route_reply    RouteDiscovery
+//     3 error_reason   enum Error    (NONE = 0 means "delivered")
+//
+// Only the ACK is used: a Routing with error_reason = NONE, sent to whoever
+// wrote a direct message, with Data.request_id set to that message's id.
+// error_reason is a oneof member, so nanopb writes it even when it is 0:
+// the ACK payload is exactly 0x18 0x00 (mesh.proto, message Routing).
+constexpr uint32_t ROUTING_ERROR_NONE = 0;
+
+size_t codificarRoutingAck(uint8_t* out, size_t cap);
+
+// true if the payload parses and carries error_reason. 'error' gets its value.
+// A Routing without error_reason (a route request or reply) returns false.
+bool decodificarRoutingError(const uint8_t* in, size_t len, uint32_t* error);
+
 }  // namespace proto

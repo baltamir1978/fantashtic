@@ -109,6 +109,12 @@
 #define SD_DIR_BASE       "/fantashtic"
 #define SD_DIR_CHAT       "/fantashtic/chat"
 #define SD_DIR_CAMPO      "/fantashtic/campo"
+// One single chat file, in the order things happened. It used to be one file
+// per month, named after the GPS date, and that order cannot be rebuilt: without
+// a fix everything went to sin-fecha.log, so indoors the most recent messages
+// ended up in the "oldest" file. Reading the last lines back at boot needs the
+// real order, and a single append-only file is the only place that has it.
+#define SD_FILE_CHAT      "/fantashtic/chat/chat.log"
 #define SD_FILE_NODES     "/fantashtic/nodes.bin"
 
 // =============================================================================
@@ -284,6 +290,27 @@
 #define CHAT_RAM_MESSAGES     60
 #define MSG_MAX_BYTES        180     // BYTES UTF-8, no caracteres
 #define MSG_BUF_BYTES        200
+// Direct messages waiting for an ACK (mesh/pending.h). Each slot keeps a copy
+// of the encrypted packet, ~270 bytes: 6 of them is under 2 KB of RAM. A slot
+// lives at most DM_ACK_TIMEOUT_MS * (DM_RETRIES + 1), so six fill up only if
+// someone sends six direct messages in under 45 s.
+#define DM_PENDING_MAX         6
+// Retries after the first send. Meshtastic's ReliableRouter does 3; with 3-4
+// nodes and a 10 % duty budget, 2 is enough and costs one packet less.
+#define DM_RETRIES             2
+// Wait for the ACK before retrying. At SF11/BW250 a packet is ~0.5 s of air;
+// the ACK has to cross back through up to one relay, and each relay waits
+// ~0.45 s plus its contention window. 12 s leaves room for a busy channel. The
+// random extra keeps two nodes that lost the same ACK from retrying in lockstep.
+#define DM_ACK_TIMEOUT_MS      12000
+#define DM_ACK_JITTER_MS        3000
+// A duplicate of a direct message to us is acknowledged again only if our last
+// ACK for it is older than this. Copies of the SAME try (the direct one plus a
+// relay's) arrive within a couple of seconds of each other; a retry cannot come
+// before DM_ACK_TIMEOUT_MS. Without it, with three nodes in range, every direct
+// message cost two ACKs, each relayed again.
+#define DM_REACK_MIN_MS         6000
+#define DM_ACKS_RECIENTES          8
 #define NODE_LONGNAME_LEN     16     // truncar: upstream permite hasta 40
 #define NODE_SHORTNAME_LEN     5
 

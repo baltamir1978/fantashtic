@@ -4,6 +4,77 @@ Documento de traspaso. `CLAUDE.md` tiene el contexto permanente; esto es lo que 
 
 ---
 
+## 24 de septiembre de 2026 — mensajes privados e historial recuperable
+
+Pensado para el **tercer nodo**. **Sin compilar para el ESP32 y sin probar en el aparato**: en el
+entorno donde se escribió, la red no dejaba llegar al registro de PlatformIO. Lo que sí está
+hecho: **95 tests en verde** (80 → 95) con `g++` + Unity, y una comprobación de sintaxis de
+`app.cpp`, `ui.cpp`, `store.cpp` y `storage.cpp` contra cabeceras stub de Arduino/M5. **Lo
+primero en la próxima sesión con hardware: `pio run`.**
+
+### Chat del grupo y chats privados
+
+- **`TODOS` + uno por nodo.** `←` `→` en el chat cambian de conversación; `→` en Nodos abre el
+  privado con el resaltado; `ESC` con la línea vacía vuelve a `TODOS`. El destinatario va **en la
+  línea de escritura, en su color**. Punto naranja = sin leer en otra conversación (y en Nodos,
+  en quien te ha escrito).
+- **En el aire**: unicast (`to` = NodeNum) con `want_ack`. El que lo recibe contesta con un
+  **`ROUTING_APP` ACK**: `Routing{error_reason = NONE}` (bytes `18 00`) y `Data.request_id`
+  (campo 6, fixed32) con el id confirmado. Formato de Meshtastic, por fidelidad de byte.
+- **Por qué hacía falta un ACK de verdad**: el ACK implícito no se dispara nunca con un vecino
+  directo, porque el router entrega el unicast para nosotros **sin propagarlo**. El mensaje se
+  quedaba en `.` para siempre.
+- **Reintentos** (`mesh/pending.h`): el MISMO paquete cifrado, mismo id, **2 veces**, cada
+  12-15 s. Sin ACK tras el último → `!`. Con ACK → ✓ (`EST_ENTREGADO`, final: un relevo oído
+  tarde no lo devuelve a `+`).
+
+**Tres trampas que salieron al pensarlo con tres nodos**, las tres con test:
+
+1. **El reintento no cruza el relevo.** A → C → B: C ya vio ese (from, id) y tiraría el
+   reintento por duplicado, así que si se perdía el primer intento pasado C, o el ACK de vuelta,
+   **ningún reintento llegaría**. El router **vuelve a relevar un duplicado dirigido con
+   `want_ack` cuando viene directo del emisor** (`hop_limit == hop_start`). Las copias ya
+   relevadas tienen `hop_limit` menor y se siguen tirando: no hay bucle posible.
+2. **Doble ACK con tres nodos al alcance.** B oye el privado de A y además la copia que releva C;
+   la copia es un duplicado para B con `want_ack`. Se vuelve a acusar solo si el último ACK de
+   ese paquete tiene más de `DM_REACK_MIN_MS` (6 s): las copias llegan en segundos, un reintento
+   no antes de 12.
+3. **Confirmar lo que no se descifró.** Un privado con otra clave no se acusa (se acusa tras
+   descifrar, a propósito), pero su reintento llega como duplicado y se habría acusado sin
+   descifrar. Solo se vuelve a acusar lo que ya se acusó una vez.
+
+**Privado no es secreto**: va con la clave del grupo, el relevo podría leerlo. Está dicho en
+`app.h` y en el README.
+
+### Historial en la microSD
+
+- **Un solo fichero**, `/fantashtic/chat/chat.log`, en vez de uno por mes. El mensual se nombraba
+  por la fecha del GPS y sin fix todo iba a `sin-fecha.log`: en interior lo último acababa en el
+  fichero "viejo" y el orden real no se podía reconstruir. Los ficheros antiguos no se borran ni
+  se recuperan.
+- **Nueva columna** `conv` (`*` = grupo, o el NodeNum del otro) antes del texto. Las líneas de
+  seis columnas del formato viejo se siguen leyendo, como del grupo. `\` ahora también se escapa.
+- **Al arrancar** se recuperan las últimas 60 líneas **leyendo desde el final**
+  (`hal::sdReadTail()`), antes de levantar la radio porque comparten bus. Lo recuperado cuenta
+  como leído, lo propio sale sin marca (su estado no se guardó) y un SOS antiguo sale en rojo
+  **sin alarma**.
+- **Ajustes → Recuperar chat** (NVS `chatrec`, por defecto sí). Vale para el próximo arranque.
+
+### Qué probar en el aparato
+
+1. `pio run`, y que el arranque diga `store: N mensajes recuperados de la microSD`.
+2. Dos nodos: privado de A a B → en A pasa de `.` a ✓ en segundos; en B sale en el privado de A
+   y el punto naranja en `TODOS`.
+3. Apagar B y escribirle: A debe mostrar `!` a los ~40 s y la consola, dos `reintento de`.
+4. **Con el tercero**, B lejos de A pero al alcance de C: el privado debe llegar por C y el ✓
+   volver. Luego lo mismo tapando el camino de vuelta, para ver actuar el reintento.
+5. Reiniciar con tarjeta: el chat vuelve con sus conversaciones. Sacar la tarjeta y abrir
+   `chat.log` en una hoja de cálculo.
+6. La geometría de la línea de escritura con el nombre delante y la pista `Fn+< >`: calculada,
+   no vista.
+
+---
+
 ## 1 de agosto de 2026 — macOS, cobertura vigilada y mensajes largos
 
 **El proyecto ya se compila y se prueba en macOS**, y es la ruta limpia: `brew install

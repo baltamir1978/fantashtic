@@ -4,10 +4,11 @@
 #include <Preferences.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "hal/storage.h"
 #include "proto/kdf.h"
+#include "strings.h"
+#include "util/chatlog.h"
 #include "util/utf8.h"
 
 namespace store {
@@ -26,42 +27,64 @@ size_t  g_ini = 0;      // indice del mas antiguo
 // marcarlo como propagado cuando llegue el ACK implicito.
 uint32_t g_ids[CHAT_RAM_MESSAGES] = {};
 
-// Cola de lineas pendientes de escribir en la tarjeta.
+// Cola de lineas pendientes de escribir en la tarjeta. Room for the escaped
+// text (a newline becomes two bytes) plus the fixed columns.
 constexpr size_t PENDIENTES_MAX = 16;
-char   g_pend[PENDIENTES_MAX][200];
+constexpr size_t LINEA_MAX = MSG_BUF_BYTES + 80;
+char   g_pend[PENDIENTES_MAX][LINEA_MAX];
 size_t g_pend_n = 0;
 uint32_t g_ultimo_volcado = 0;
 
 size_t indiceFisico(size_t logico) { return (g_ini + logico) % CHAT_RAM_MESSAGES; }
 
-void rutaDelMes(char* out, size_t cap, uint32_t epoch) {
-  // Sin hora del GPS todavia, todo va a un fichero de arranque.
-  if (epoch < 1600000000u) { snprintf(out, cap, SD_DIR_CHAT "/sin-fecha.log"); return; }
-  const time_t t = (time_t)epoch;
-  struct tm tmv;
-  gmtime_r(&t, &tmv);
-  snprintf(out, cap, SD_DIR_CHAT "/%04d-%02d.log", tmv.tm_year + 1900, tmv.tm_mon + 1);
+// Into the RAM ring only. anadirMensaje() is this plus the line for the card.
+void meterEnBuffer(const Mensaje& m) {
+  size_t idx;
+  if (g_n < CHAT_RAM_MESSAGES) {
+    idx = indiceFisico(g_n);
+    g_n++;
+  } else {
+    idx = g_ini;                        // desaloja el mas antiguo
+    g_ini = (g_ini + 1) % CHAT_RAM_MESSAGES;
+  }
+  g_msgs[idx] = m;
+  g_ids[idx]  = 0;
 }
 
 void encolarLinea(const Mensaje& m) {
   if (!hal::sdOk()) return;
   if (g_pend_n >= PENDIENTES_MAX) return;   // se pierde la linea, no el mensaje
 
-  // Formato tabulado: epoch, nodo, direccion, RSSI, SNR y texto. Se abre en
-  // cualquier hoja de calculo sin herramientas especiales.
-  char* d = g_pend[g_pend_n];
-  int n = snprintf(d, sizeof(g_pend[0]), "%lu\t%08X\t%s\t%d\t%d\t",
-                   (unsigned long)m.epoch, (unsigned)m.nodo,
-                   m.estado == EST_RECIBIDO ? "RX" : "TX", (int)m.rssi, (int)m.snr);
-  // Los saltos de linea se escapan para no romper el formato de una linea por
-  // mensaje.
-  for (const char* p = m.texto; *p && n < (int)sizeof(g_pend[0]) - 3; p++) {
-    if (*p == '\n')      { d[n++] = '\\'; d[n++] = 'n'; }
-    else if (*p == '\t') { d[n++] = ' '; }
-    else                 { d[n++] = *p; }
-  }
-  d[n] = '\0';
-  g_pend_n++;
+  // Formato tabulado: see util/chatlog.h. Se abre en cualquier hoja de calculo
+  // sin herramientas especiales.
+  util::EntradaChat e;
+  e.epoch = m.epoch;
+  e.nodo  = m.nodo;
+  e.conv  = m.conv;
+  e.tx    = (m.nodo == 0);
+  e.rssi  = m.rssi;
+  e.snr   = m.snr;
+  snprintf(e.texto, sizeof(e.texto), "%s", m.texto);
+  if (util::formatearLineaChat(e, g_pend[g_pend_n], LINEA_MAX)) g_pend_n++;
+}
+
+void restaurarLinea(const char* linea, void*) {
+  util::EntradaChat e;
+  if (!util::analizarLineaChat(linea, &e)) return;
+  Mensaje m;
+  m.nodo   = e.tx ? 0 : e.nodo;
+  m.conv   = e.conv;
+  m.epoch  = e.epoch;
+  m.ms     = 0;
+  m.rssi   = e.rssi;
+  m.snr    = e.snr;
+  m.estado = e.tx ? EST_ARCHIVO : EST_RECIBIDO;
+  m.leido  = true;          // old news: it must not light the unread marker
+  snprintf(m.texto, sizeof(m.texto), "%s", e.texto);
+  // Red again, but WITHOUT the alarm: that only fires from app::recibirTexto(),
+  // and an SOS from last week must not take over the screen at boot.
+  m.sos = strncmp(m.texto, S_SOS_TEXTO, strlen(S_SOS_TEXTO)) == 0;
+  meterEnBuffer(m);
 }
 
 }  // namespace
@@ -93,6 +116,7 @@ void begin() {
   g_cfg.volumen    = g_nvs.getUChar("vol", 150);     // nivel 3 de 5
   g_cfg.gps_activo = g_nvs.getBool("gpson", true);
   g_cfg.antena_ok  = g_nvs.getBool("antok", false);
+  g_cfg.recuperar_chat = g_nvs.getBool("chatrec", true);
 
   Serial.printf("store: %s, canal '%s', nodo '%s'\n",
                 g_cfg.configurado ? "configurado" : "SIN CONFIGURAR",
@@ -118,6 +142,7 @@ bool guardar() {
   g_nvs.putUChar("vol", g_cfg.volumen);
   g_nvs.putBool("gpson", g_cfg.gps_activo);
   g_nvs.putBool("antok", g_cfg.antena_ok);
+  g_nvs.putBool("chatrec", g_cfg.recuperar_chat);
   return ok;
 }
 
@@ -138,16 +163,7 @@ void restablecer() {
 // ================================ historial =================================
 
 void anadirMensaje(const Mensaje& m) {
-  size_t idx;
-  if (g_n < CHAT_RAM_MESSAGES) {
-    idx = indiceFisico(g_n);
-    g_n++;
-  } else {
-    idx = g_ini;                        // desaloja el mas antiguo
-    g_ini = (g_ini + 1) % CHAT_RAM_MESSAGES;
-  }
-  g_msgs[idx] = m;
-  g_ids[idx]  = 0;
+  meterEnBuffer(m);
   encolarLinea(m);
 }
 
@@ -160,7 +176,12 @@ void marcarEstado(uint32_t paquete_id, uint8_t estado) {
   if (paquete_id == 0) return;
   for (size_t i = 0; i < g_n; i++) {
     const size_t f = indiceFisico(i);
-    if (g_ids[f] == paquete_id) { g_msgs[f].estado = estado; return; }
+    if (g_ids[f] != paquete_id) continue;
+    uint8_t& e = g_msgs[f].estado;
+    if (e == EST_ENTREGADO) return;                              // final
+    if (estado == EST_PROPAGADO && e != EST_ENVIANDO) return;    // no going back
+    e = estado;
+    return;
   }
 }
 
@@ -171,13 +192,41 @@ const Mensaje* mensaje(size_t i) {
   return &g_msgs[indiceFisico(i)];
 }
 
+size_t noLeidos(uint32_t conv) {
+  size_t n = 0;
+  for (size_t i = 0; i < g_n; i++) {
+    const Mensaje& m = g_msgs[indiceFisico(i)];
+    if (m.conv == conv && !m.leido) n++;
+  }
+  return n;
+}
+
+size_t noLeidosTotal() {
+  size_t n = 0;
+  for (size_t i = 0; i < g_n; i++) n += g_msgs[indiceFisico(i)].leido ? 0 : 1;
+  return n;
+}
+
+void marcarLeidos(uint32_t conv) {
+  for (size_t i = 0; i < g_n; i++) {
+    Mensaje& m = g_msgs[indiceFisico(i)];
+    if (m.conv == conv) m.leido = true;
+  }
+}
+
+size_t restaurarHistorial() {
+  if (!g_cfg.recuperar_chat || !hal::sdOk()) return 0;
+  const size_t antes = g_n;
+  hal::sdReadTail(SD_FILE_CHAT, CHAT_RAM_MESSAGES, restaurarLinea, nullptr);
+  const size_t n = g_n - antes;
+  Serial.printf("store: %u mensajes recuperados de la microSD\n", (unsigned)n);
+  return n;
+}
+
 void volcarYa() {
   if (!hal::sdOk() || g_pend_n == 0) return;
 
-  char ruta[64];
-  rutaDelMes(ruta, sizeof(ruta), g_msgs[indiceFisico(g_n ? g_n - 1 : 0)].epoch);
-
-  for (size_t i = 0; i < g_pend_n; i++) hal::sdAppendLine(ruta, g_pend[i]);
+  for (size_t i = 0; i < g_pend_n; i++) hal::sdAppendLine(SD_FILE_CHAT, g_pend[i]);
   g_pend_n = 0;
   g_ultimo_volcado = millis();
 }

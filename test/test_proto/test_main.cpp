@@ -114,10 +114,34 @@ void test_data_salta_campos_desconocidos() {
   TEST_ASSERT_EQUAL_UINT32(1, d.portnum);
   TEST_ASSERT_EQUAL_size_t(2, d.payload_len);
   TEST_ASSERT_EQUAL_UINT8_ARRAY((const uint8_t*)"ab", d.payload, 2);
-  // want_response ya NO es un campo desconocido: se entiende. El request_id
-  // fixed32 de despues si se sigue saltando, y es lo que prueba que saltarlo
-  // deja el cursor en el sitio correcto.
+  // want_response ya NO es un campo desconocido: se entiende. Tampoco el
+  // request_id fixed32 de despues, que es el ACK de los mensajes directos.
   TEST_ASSERT_TRUE(d.want_response);
+  TEST_ASSERT_EQUAL_HEX32(0xEFBEADDE, d.request_id);   // little-endian
+}
+
+// request_id (field 6, fixed32) carries the id of the direct message an ACK
+// confirms. Only written when set, so every published vector stays the same.
+void test_data_request_id() {
+  uint8_t buf[64];
+  Data a;
+  a.portnum = 5;                               // ROUTING_APP
+  a.payload[0] = 0x18; a.payload[1] = 0x00;    // Routing{error_reason = NONE}
+  a.payload_len = 2;
+  a.request_id = 0x12345678;
+  const size_t n = codificarData(a, buf, sizeof(buf));
+  const uint8_t esperado[] = {0x08, 0x05, 0x12, 0x02, 0x18, 0x00,
+                              0x35, 0x78, 0x56, 0x34, 0x12};
+  TEST_ASSERT_EQUAL_size_t(sizeof(esperado), n);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(esperado, buf, n);
+
+  Data b;
+  TEST_ASSERT_TRUE(decodificarData(buf, n, &b));
+  TEST_ASSERT_EQUAL_UINT32(5, b.portnum);
+  TEST_ASSERT_EQUAL_HEX32(0x12345678, b.request_id);
+
+  a.request_id = 0;
+  TEST_ASSERT_EQUAL_size_t(6, codificarData(a, buf, sizeof(buf)));   // omitted
 }
 
 // El descubrimiento de nodos depende de este campo: un NODEINFO con
@@ -247,6 +271,7 @@ int main(int, char**) {
   RUN_TEST(test_cabecera_ida_y_vuelta);
   RUN_TEST(test_data_salta_campos_desconocidos);
   RUN_TEST(test_data_want_response);
+  RUN_TEST(test_data_request_id);
   RUN_TEST(test_vectores);
   RUN_TEST(test_clave_incorrecta_se_rechaza);
   RUN_TEST(test_relay_no_toca_la_carga);

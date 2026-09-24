@@ -39,10 +39,11 @@ void empaquetarCabecera(const Cabecera& c, uint8_t out[16]);
 bool desempaquetarCabecera(const uint8_t in[16], Cabecera* c);
 
 // --- mensaje Data ------------------------------------------------------------
-// Solo se implementan los tres campos que hacen falta:
+// Solo se implementan los campos que hacen falta:
 //   campo 1  portnum        varint
 //   campo 2  payload        bytes (max 233)
 //   campo 3  want_response  varint (bool)
+//   campo 6  request_id     fixed32 (el ACK de un mensaje directo)
 // El analizador salta correctamente cualquier otro campo, incluidos los
 // fixed32 (dest, source, request_id, reply_id, emoji), que NO son varint.
 //
@@ -64,6 +65,13 @@ struct Data {
   // Se codifica SOLO si es true: proto3 omite los valores por defecto, asi que
   // los vectores de docs/VECTORES.md siguen saliendo byte a byte iguales.
   bool     want_response = false;
+
+  // field 6, fixed32: request_id (mesh.proto, message Data)
+  //
+  // Id of the packet this one answers. A ROUTING_APP ACK carries the id of the
+  // direct message it confirms here. Encoded only when non-zero, like
+  // want_response, so the published vectors stay byte-identical.
+  uint32_t request_id = 0;
 };
 
 // Devuelve los bytes escritos, o 0 si no cabe.

@@ -30,6 +30,11 @@
 #define S_VOLVER_FIN      "ESC = volver al final"
 #define S_NUEVO_ABAJO     "hay mensajes nuevos"
 #define S_SIN_MENSAJES    "Todavia no hay mensajes"
+// Conversations. The group is "TODOS"; a direct chat shows the other node's
+// short name in the same place. The arrows are Fn+, and Fn+/ -- the keycaps
+// have them printed, which is why the hint shows the arrows and not the keys.
+#define S_TODOS           "TODOS"
+#define S_CHAT_CAMBIAR    "Fn+< > = otro chat"
 
 // --- nodos -------------------------------------------------------------------
 #define S_HACE            "hace"
@@ -107,6 +112,7 @@
 #define S_SET_HOPS        "Saltos maximos"
 #define S_SET_FABRICA     "Restablecer de fabrica"
 #define S_SET_INFO        "Informacion"
+#define S_SET_RECUPERAR   "Recuperar chat"
 #define S_ACTIVADO        "activado"
 #define S_DESACTIVADO     "apagado"
 
@@ -189,3 +195,4 @@
 #define S_K_FLECHAS       "flechas = mover"
 #define S_K_ENTER         "ENTER = elegir"
 #define S_K_ESC           "ESC = atras"
+#define S_K_NODOS         "ENTER=brujula >=chat"
