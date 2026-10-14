@@ -22,6 +22,9 @@ enum class Accion : uint8_t {
   RETRANSMITIR,              // unicast para otro: solo relevo
   ENTREGAR_Y_RETRANSMITIR,   // difusion: se muestra Y se propaga
   ACK_IMPLICITO,             // alguien retransmitio un paquete nuestro
+  REACUSAR,                  // duplicate of a direct message to us that asked
+                             // for an ACK: the sender did not hear the first
+                             // one and retried, so the ACK goes out again
 };
 
 const char* accionNombre(Accion a);

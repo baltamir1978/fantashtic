@@ -20,6 +20,7 @@ const char* accionNombre(Accion a) {
     case Accion::RETRANSMITIR:            return "retransmitir";
     case Accion::ENTREGAR_Y_RETRANSMITIR: return "entregar y retransmitir";
     case Accion::ACK_IMPLICITO:           return "ack implicito";
+    case Accion::REACUSAR:                return "reacusar";
     default:                              return "descartar";
   }
 }
@@ -42,6 +43,25 @@ Accion decidir(const proto::Cabecera& c, uint32_t mi_nodo,
   // Duplicado: anotamos quien lo relevo, por si sirve, y lo tiramos.
   if (hist.vistoOAnadir(c.from, c.id)) {
     if (c.relay_node) hist.anotarRelayer(c.from, c.id, c.relay_node);
+    // A retry of a direct message we already delivered: our ACK got lost on the
+    // way back. It is NOT shown again, but it has to be acknowledged again, or
+    // the sender runs out of retries and marks as failed a message that arrived.
+    // Same as Meshtastic's ReliableRouter on a duplicate with want_ack.
+    if (c.to == mi_nodo && c.want_ack) return Accion::REACUSAR;
+
+    // A retry of a direct message for someone else, heard straight from its
+    // sender: hop_limit is still hop_start, so no relay has touched this copy.
+    // It is relayed again. Without this a retry could never cross a relay --
+    // the relay already saw that (from, id) and would drop it -- and when the
+    // first try is lost past the relay, or the ACK is lost on the way back,
+    // every retry dies at the relay too. Copies that already went through a
+    // relay have a lower hop_limit and are still dropped, so this cannot loop:
+    // it happens at most once per retry, and there are DM_RETRIES of those.
+    const uint8_t mi_ultimo = proto::ultimoByte(mi_nodo);
+    if (c.to != MESH_BROADCAST_ADDR && c.want_ack && soy_retransmisor &&
+        c.hop_limit > 0 && c.hop_limit == c.hop_start &&
+        (c.next_hop == 0 || c.next_hop == mi_ultimo))
+      return Accion::RETRANSMITIR;
     return Accion::DESCARTAR;
   }
   if (c.relay_node) hist.anotarRelayer(c.from, c.id, c.relay_node);

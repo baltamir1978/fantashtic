@@ -21,7 +21,14 @@ void begin(uint32_t node_num);
 void loop();
 
 // --- mensajeria --------------------------------------------------------------
-bool enviarTexto(const char* txt);
+// 'para' = 0 writes to the whole group; a NodeNum writes only to that node. A
+// direct message asks for an ACK and is retried until it arrives or runs out
+// of tries (see mesh/pending.h).
+//
+// PRIVATE, NOT SECRET: it goes out with the group key, like everything else. A
+// relay can decrypt it and simply does not show it. Anyone with the group
+// phrase and a modified firmware could read it.
+bool enviarTexto(const char* txt, uint32_t para = 0);
 
 // --- SOS ---------------------------------------------------------------------
 void      sosArmar();          // arranca la cuenta atras

@@ -13,9 +13,10 @@ Parte de los usuarios son niños, y eso gobierna casi todas las decisiones de in
 
 Verificado ejecutando código, no leyéndolo:
 
-- **80 tests en el ordenador** (`pio test -e native`): protocolo, router, ciclo de trabajo,
-  criptografía, geodesia, UTF-8, troceado de líneas, vigilancia del enlace, tabla de nodos y los
-  mensajes `Position` / `User` / `Telemetry`.
+- **95 tests en el ordenador** (`pio test -e native`): protocolo, router, ciclo de trabajo,
+  criptografía, geodesia, UTF-8, troceado de líneas, vigilancia del enlace, tabla de nodos, los
+  mensajes `Position` / `User` / `Telemetry` / `Routing`, los reintentos de los mensajes
+  privados y el formato del historial en la microSD.
 - **En el aparato**: arranque, pantalla, teclado, microSD, NVS, GPS con fix, y el **enlace de
   radio entre dos nodos a −12/−18 dBm** — o sea cripto, cabecera, router y ACK implícito en el
   aire real y en los dos sentidos.
@@ -27,6 +28,8 @@ Lo que **sigue sin verificar**, y hay que decirlo sin adornos:
   30 s**. Necesario pero no suficiente. Ver `ESTADO.md`: lo descartado y por dónde seguir.
 - **Los mA.** No hay ni una medida de consumo. Todo lo de autonomía es de hoja de datos.
 - **La geometría de las cinco pantallas.** Calculada sobre 240×135, no vista.
+- **Los mensajes privados y la recuperación del historial (24-sep)**: ni compilados para el
+  ESP32 ni probados en el aparato. Ver `ESTADO.md`.
 - El relevo con tres aparatos, el SOS de punta a punta y las pruebas de exterior.
 
 **El conmutador de antena del Cap NO responde** (medido en dos unidades, en los dos buses, a
@@ -209,7 +212,7 @@ PowerShell, ni instalar un `g++` aparte, porque el de Xcode vale para el entorno
 
 ```bash
 pio run                                  # compilar  (SUCCESS, 17 s en caliente)
-pio test -e native                       # 73 casos, 73 en verde
+pio test -e native                       # 95 casos, 95 en verde
 pio run -t upload --upload-port /dev/cu.usbmodem*
 pio device monitor -b 115200
 pio device list                          # el Cardputer sale como /dev/cu.usbmodem*
@@ -246,7 +249,7 @@ El Cardputer Adv aparece como **COM10**, VID:PID `303A:1001` (USB-Serial-JTAG).
 La consola solo imprime el diagnóstico al arrancar, así que para verlo hay que
 encadenar `-t upload -t monitor`: abrir el monitor a posteriori llega tarde.
 
-Tests en el ordenador (**80 casos, 80 en verde**). Necesitan un `g++` de
+Tests en el ordenador (**95 casos, 95 en verde**). Necesitan un `g++` de
 verdad; en esta máquina solo había MSVC, que rechaza los `build_flags` estilo
 GCC del entorno `native`:
 
@@ -277,7 +280,7 @@ Reglas de dependencia:
 
 - `ui/` **nunca** toca `radio/` directamente; pasa por `app/`.
 - `proto/`, `mesh/` y `util/` **no dependen de Arduino** y compilan en el ordenador. Es lo que
-  permite que existan los 80 tests. Al añadir código a esas capas, mantener la propiedad y
+  permite que existan los 95 tests. Al añadir código a esas capas, mantener la propiedad y
   actualizar `build_src_filter` del entorno `native`.
 - Todo el estado temporal se pasa por parámetro (reloj, aleatoriedad), no se lee de `millis()`
   dentro de la lógica: por eso el router y el ciclo de trabajo se pueden probar de forma
@@ -317,6 +320,8 @@ Reglas de dependencia:
 | `$PCAS02,5000` no baja el caudal NMEA a ~40 B/s | Medido el 30-jul-2026: baja de ~630 a ~400 B/s y **la ráfaga sigue llegando cada ~1000 ms**. El AT6668 no hace caso del todo (sigue soltando GSV mientras busca, por lo menos). Consecuencia: la previsión de la ráfaga hay que hacerla con el intervalo **medido**, no con el pedido; fiarse del pedido dormiría encima de cuatro ráfagas de cada cinco |
 | Abrir el puerto serie **resetea el nodo** | En el USB-Serial-JTAG, DTR/RTS gobiernan el reset y el modo de arranque, así que un `SerialPort.Open()` corriente provoca `rst:0x15 (USB_UART_CHIP_RESET)`. Para observar un nodo sin perturbarlo, **no abrir su puerto**: se mira desde la consola del otro |
 | Con el light sleep activo, esptool deja de alcanzar el nodo (`No serial data received`) | Windows **suspende** el puerto cuando ningún programa lo tiene abierto → paran los SOF del USB → `HWCDC::isPlugged()` pasa a false → el nodo se duerme → y dormido ya no hay USB al que resetear. El guardián del USB sirve para no perder una consola **ya abierta**, no como red de seguridad para flashear. No es un ladrillo: el bootloader está en ROM, se recupera con interruptor **OFF** → mantener **G0** → dar corriente → soltar |
+| Un mensaje privado a un vecino se queda en `.` para siempre | El ACK implícito solo existe si alguien RELEVA el paquete, y un unicast para nosotros se entrega **sin propagarse**. Los privados llevan `want_ack` y se confirman con un `ROUTING_APP` ACK (`Data.request_id`, campo 6, **fixed32**). Y tres detalles que no se ven con dos nodos: el relevo tiene que **volver a relevar el reintento** que llega directo del emisor (`hop_limit == hop_start`) o ningún reintento cruza un relevo; la copia de un relevo **no se vuelve a acusar** (`DM_REACK_MIN_MS`); y un reintento **que no se acusó la primera vez** (no descifró) no se acusa nunca. Todo en `mesh/pending.h` y `router.cpp`, con test |
+| El historial recuperado sale desordenado | Era un fichero por mes con la fecha del GPS, y sin fix todo iba a `sin-fecha.log`. Ahora es **un solo `chat.log`** y se lee su cola desde el final |
 | El SOS se corta tras un envío | Cualquier mensaje entrante lo cancelaba; ahora exige completar la ráfaga |
 | Al soltar el combo del SOS se enviaba la línea de chat | El combo era ENTER+ESC, y dos teclas no se levantan nunca en el mismo milisegundo: soltando ESC primero quedaba ENTER pulsado y **se enviaba lo que hubiera escrito**, en plena emergencia. Cambiado a **ESC+DEL** el 30-jul-2026: lo peor que puede pasar al soltar es borrar un carácter. Siguen en esquinas opuestas del teclado, que es lo que hace el gesto difícil por accidente |
 | Brillo o volumen se desploman al segundo toque | Desbordamiento de `uint8_t`: 90+20 = 110 → `110*255/100` = 280 → 24 |

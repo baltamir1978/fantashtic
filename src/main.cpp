@@ -374,6 +374,8 @@ void setup() {
              (unsigned)(g_nodo & 0xFFFF));
   }
   hal::soundVolumen(store::config().volumen);
+  // Before the radio is up: it reads from the SPI bus the radio shares.
+  store::restaurarHistorial();
 
   const auto scan = hal::i2cScan();
   hal::i2cScanReport(scan);

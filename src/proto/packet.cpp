@@ -121,6 +121,16 @@ size_t codificarData(const Data& d, uint8_t* out, size_t out_cap) {
     out[n++] = 0x18;            // (campo 3 << 3) | varint
     out[n++] = 0x01;
   }
+
+  // field 6, fixed32: request_id. Only when set, same reason as above.
+  if (d.request_id) {
+    if (n + 5 > out_cap) return 0;
+    out[n++] = 0x35;            // (field 6 << 3) | fixed32
+    out[n++] = (uint8_t)(d.request_id);
+    out[n++] = (uint8_t)(d.request_id >> 8);
+    out[n++] = (uint8_t)(d.request_id >> 16);
+    out[n++] = (uint8_t)(d.request_id >> 24);
+  }
   return n;
 }
 
@@ -156,6 +166,9 @@ bool decodificarData(const uint8_t* in, size_t len, Data* d) {
       }
       case 5:                                    // fixed32: dest, source,
         if (pos + 4 > len) return false;         // request_id, reply_id, emoji
+        if (campo == 6)
+          d->request_id = (uint32_t)in[pos] | ((uint32_t)in[pos + 1] << 8) |
+                          ((uint32_t)in[pos + 2] << 16) | ((uint32_t)in[pos + 3] << 24);
         pos += 4;
         break;
       case 1:                                    // fixed64

@@ -673,7 +673,7 @@ Formato **FAT32**, librería `SD` de Arduino-ESP32 montada sobre la misma instan
 
 ```
 /fantashtic/
-  chat/2026-07.log      historial mensual, append-only
+  chat/chat.log         historial, UN solo fichero append-only (ver util/chatlog.h)
   nodes.bin             copia de la base de datos de nodos
   campo/2026-07-29.csv  registros de pruebas de campo (ver ALCANCE.md)
 ```
@@ -681,15 +681,23 @@ Formato **FAT32**, librería `SD` de Arduino-ESP32 montada sobre la misma instan
 **Formato del historial: log de texto, append-only, una línea por mensaje.**
 
 ```
-1753790400\t7A3B12C4\tPAPA\tRX\t-92\t6.5\tBajamos en 20 min
+1753790400\t7A3B12C4\tRX\t-92\t6\t*\tBajamos en 20 min
+1753790460\t00000000\tTX\t0\t0\t7A3B12C4\tVale, os espero
 ```
 
-epoch · NodeNum · nombre corto · RX/TX · RSSI · SNR · texto (con `\n` escapado).
+epoch · NodeNum del remitente (`00000000` = nuestro) · RX/TX · RSSI · SNR · conversación
+(`*` = grupo, o el NodeNum del otro en un privado) · texto (`\n` y `\\` escapados). Las líneas
+de antes de los privados no traen la columna de conversación y se leen como del grupo.
 
 Append-only es la elección correcta aquí: escribir un mensaje cuesta abrir, añadir una línea
-y cerrar, sin reescribir nada. Rotación mensual, sin límite práctico de historial. Y como es
-texto plano y tabulado, la tarjeta se puede sacar y abrir el historial en cualquier
-ordenador o importarlo a una hoja de cálculo sin herramientas especiales.
+y cerrar, sin reescribir nada. Y como es texto plano y tabulado, la tarjeta se puede sacar y
+abrir el historial en cualquier ordenador o importarlo a una hoja de cálculo sin herramientas
+especiales.
+
+**Un solo fichero, no uno por mes.** Antes se rotaba por la fecha del GPS, y sin fix todo iba a
+`sin-fecha.log`: en interior lo más reciente acababa en el fichero "más viejo" y el orden real
+no se podía reconstruir. Al arrancar se recuperan las **últimas 60 líneas** leyendo desde el
+final (`hal::sdReadTail()`), así que el arranque no se alarga con el tamaño del historial.
 
 ### 7.2 Sin tarjeta, el firmware sigue funcionando
 
@@ -820,7 +828,7 @@ Barra de estado, pantalla de chat, entrada de texto, **navegación del historial
 cursores**, colores por nodo, persistencia.
 **Verificación:** conversación de ida y vuelta entre dos nodos; recorrer el historial hacia
 atrás y volver con `ESC`; reiniciar y comprobar que el historial sobrevive; sacar la
-microSD, meterla en un ordenador y abrir `/fantashtic/chat/AAAA-MM.log` — debe leerse.
+microSD, meterla en un ordenador y abrir `/fantashtic/chat/chat.log` — debe leerse.
 Repetir toda la fase **sin tarjeta** para confirmar que degrada bien.
 
 ### Fase 7 — Nodos

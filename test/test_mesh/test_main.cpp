@@ -6,6 +6,7 @@
 
 #include "mesh/duty.h"
 #include "mesh/history.h"
+#include "mesh/pending.h"
 #include "mesh/router.h"
 #include "proto/crypto.h"
 
@@ -244,6 +245,137 @@ void test_duty_minutos_para_liberar() {
   TEST_ASSERT_EQUAL_UINT32(0, d.minutosParaLiberar(61u * 60u * 1000u));
 }
 
+// ========================= mensajes directos ================================
+
+// A retry of a direct message we already delivered is NOT delivered again, but
+// it IS acknowledged again: the first ACK got lost on the way back.
+void test_reintento_de_directo_se_reacusa() {
+  Historial h;
+  auto c = hacer(YO, OTRO, 40);
+  c.want_ack = true;
+  TEST_ASSERT_EQUAL_INT((int)Accion::ENTREGAR, (int)decidir(c, YO, h, true));
+  TEST_ASSERT_EQUAL_INT((int)Accion::REACUSAR, (int)decidir(c, YO, h, true));
+}
+
+// Only for a direct message to us that asked for an ACK. A duplicated broadcast,
+// or a direct message for someone else, is still just dropped.
+void test_reacusar_solo_si_es_para_mi_y_lo_pide() {
+  Historial h;
+  auto sin_ack = hacer(YO, OTRO, 41);
+  decidir(sin_ack, YO, h, true);
+  TEST_ASSERT_EQUAL_INT((int)Accion::DESCARTAR, (int)decidir(sin_ack, YO, h, true));
+
+  auto difusion = hacer(BCAST, OTRO, 42);
+  difusion.want_ack = true;
+  decidir(difusion, YO, h, true);
+  TEST_ASSERT_EQUAL_INT((int)Accion::DESCARTAR, (int)decidir(difusion, YO, h, true));
+
+  // For someone else, and already relayed once: dropped. (A copy straight
+  // from its sender is relayed again: see the next test.)
+  auto ajeno = hacer(0x11223344, OTRO, 43, 2);
+  ajeno.want_ack = true;
+  decidir(ajeno, YO, h, true);
+  TEST_ASSERT_EQUAL_INT((int)Accion::DESCARTAR, (int)decidir(ajeno, YO, h, true));
+}
+
+// A -> relay -> B. When A retries (same id), the relay has already seen it and
+// would drop it, so no retry could ever cross a relay. A copy straight from A
+// (hop_limit == hop_start) is relayed again; a copy that already went through a
+// relay (lower hop_limit) is not, so this cannot loop.
+void test_reintento_directo_para_otro_se_vuelve_a_relevar() {
+  Historial h;
+  const uint32_t DESTINO = 0x11223344;
+  auto c = hacer(DESTINO, OTRO, 50, 3);        // hop_start is 3 in hacer()
+  c.want_ack = true;
+  TEST_ASSERT_EQUAL_INT((int)Accion::RETRANSMITIR, (int)decidir(c, YO, h, true));
+  TEST_ASSERT_EQUAL_INT((int)Accion::RETRANSMITIR, (int)decidir(c, YO, h, true));
+
+  auto relevado = hacer(DESTINO, OTRO, 50, 2);  // already went through a relay
+  relevado.want_ack = true;
+  TEST_ASSERT_EQUAL_INT((int)Accion::DESCARTAR, (int)decidir(relevado, YO, h, true));
+
+  // Without want_ack nobody retries, so a duplicate is just a duplicate.
+  auto sin_ack = hacer(DESTINO, OTRO, 51, 3);
+  decidir(sin_ack, YO, h, true);
+  TEST_ASSERT_EQUAL_INT((int)Accion::DESCARTAR, (int)decidir(sin_ack, YO, h, true));
+
+  // A mute node does not relay retries either.
+  Historial h2;
+  decidir(c, YO, h2, false);
+  TEST_ASSERT_EQUAL_INT((int)Accion::DESCARTAR, (int)decidir(c, YO, h2, false));
+}
+
+// A relay's copy of the same try arrives seconds after the original: no second
+// ACK. A retry arrives after the ACK timeout: acknowledged again.
+void test_acuses_copia_no_reintento_si() {
+  Acuses a;
+  a.anotar(OTRO, 60, 1000);
+  TEST_ASSERT_FALSE(a.reacusar(OTRO, 60, 2500, DM_REACK_MIN_MS));     // relay copy
+  TEST_ASSERT_TRUE(a.reacusar(OTRO, 60, 1000 + DM_ACK_TIMEOUT_MS, DM_REACK_MIN_MS));
+  // ...and that retry's own relay copy is not acknowledged twice either.
+  TEST_ASSERT_FALSE(a.reacusar(OTRO, 60, 2000 + DM_ACK_TIMEOUT_MS, DM_REACK_MIN_MS));
+  // Never acknowledged: the first try did not decrypt (another key). Its retry
+  // must not be confirmed either, or "delivered" would lie.
+  TEST_ASSERT_FALSE(a.reacusar(YO, 61, 50000, DM_REACK_MIN_MS));
+}
+
+void test_pendiente_confirmado_no_se_reintenta() {
+  Pendientes p;
+  const uint8_t pkt[] = {1, 2, 3};
+  TEST_ASSERT_TRUE(p.anadir(77, pkt, sizeof(pkt), 1000, 5000));
+  TEST_ASSERT_TRUE(p.confirmar(77));
+  TEST_ASSERT_FALSE(p.confirmar(77));                 // ya no estaba
+  TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::NADA,
+                        (int)p.revisar(100000, 5000).tipo);
+}
+
+void test_pendiente_reintenta_y_se_agota() {
+  Pendientes p;
+  const uint8_t pkt[] = {9, 8, 7, 6};
+  p.anadir(55, pkt, sizeof(pkt), 1000, 5000);
+
+  // Before the timeout: nothing.
+  TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::NADA, (int)p.revisar(5999, 5000).tipo);
+
+  // Each timeout without ACK: the SAME bytes again, rescheduled.
+  uint32_t t = 6000;
+  for (int i = 0; i < DM_RETRIES; i++) {
+    const auto r = p.revisar(t, 5000);
+    TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::REINTENTAR, (int)r.tipo);
+    TEST_ASSERT_EQUAL_UINT32(55, r.id);
+    TEST_ASSERT_EQUAL_size_t(sizeof(pkt), r.len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(pkt, r.datos, sizeof(pkt));
+    TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::NADA, (int)p.revisar(t + 1, 5000).tipo);
+    t += 5000;
+  }
+
+  // Out of retries: reported once and removed.
+  const auto fin = p.revisar(t, 5000);
+  TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::AGOTADO, (int)fin.tipo);
+  TEST_ASSERT_EQUAL_UINT32(55, fin.id);
+  TEST_ASSERT_EQUAL_size_t(0, p.ocupacion());
+  TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::NADA, (int)p.revisar(t + 99999, 5000).tipo);
+}
+
+// millis() wraps after 49 days. A timeout straddling the wrap must still fire
+// on time, not 49 days later.
+void test_pendiente_sobrevive_al_desbordamiento_de_millis() {
+  Pendientes p;
+  const uint8_t pkt[] = {1};
+  p.anadir(3, pkt, 1, 0xFFFFF000u, 0x2000);       // due at 0x00001000
+  TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::NADA, (int)p.revisar(0xFFFFFF00u, 0x2000).tipo);
+  TEST_ASSERT_EQUAL_INT((int)Pendientes::Tipo::REINTENTAR, (int)p.revisar(0x1000, 0x2000).tipo);
+}
+
+void test_pendientes_llenos_no_desalojan() {
+  Pendientes p;
+  const uint8_t pkt[] = {1};
+  for (uint32_t i = 1; i <= DM_PENDING_MAX; i++) TEST_ASSERT_TRUE(p.anadir(i, pkt, 1, 0, 100));
+  TEST_ASSERT_FALSE(p.anadir(999, pkt, 1, 0, 100));
+  TEST_ASSERT_FALSE(p.anadir(0, pkt, 1, 0, 100));   // id 0 never
+  TEST_ASSERT_EQUAL_size_t(DM_PENDING_MAX, p.ocupacion());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_historial_detecta_duplicados);
@@ -269,5 +401,13 @@ int main(int, char**) {
   RUN_TEST(test_duty_ventana_rodante);
   RUN_TEST(test_duty_reparte_en_cubos);
   RUN_TEST(test_duty_minutos_para_liberar);
+  RUN_TEST(test_reintento_de_directo_se_reacusa);
+  RUN_TEST(test_reacusar_solo_si_es_para_mi_y_lo_pide);
+  RUN_TEST(test_reintento_directo_para_otro_se_vuelve_a_relevar);
+  RUN_TEST(test_acuses_copia_no_reintento_si);
+  RUN_TEST(test_pendiente_confirmado_no_se_reintenta);
+  RUN_TEST(test_pendiente_reintenta_y_se_agota);
+  RUN_TEST(test_pendiente_sobrevive_al_desbordamiento_de_millis);
+  RUN_TEST(test_pendientes_llenos_no_desalojan);
   return UNITY_END();
 }

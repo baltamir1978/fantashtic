@@ -118,6 +118,48 @@ bool sdReadLastLine(const char* path, char* out, size_t out_len) {
   return out[0] != '\0';
 }
 
+bool sdReadTail(const char* path, size_t max_lineas,
+                void (*fn)(const char* linea, void* ctx), void* ctx) {
+  if (!g_sd_ok || !fn || max_lineas == 0) return false;
+  SpiGuard g;
+
+  File f = SD.open(path, FILE_READ);
+  if (!f) return false;
+  const size_t tam = f.size();
+
+  // Walk back from the end counting line breaks. A final '\n' closes the last
+  // line and does not start a new one, so it is skipped.
+  size_t inicio = 0;
+  if (tam > 1) {
+    uint8_t trozo[256];
+    size_t fin = tam - 1;          // exclusive: the last byte is left out
+    size_t saltos = 0;
+    bool   hallado = false;
+    while (fin > 0 && !hallado) {
+      const size_t n = fin > sizeof(trozo) ? sizeof(trozo) : fin;
+      const size_t desde = fin - n;
+      if (!f.seek(desde) || f.read(trozo, n) != n) { f.close(); return false; }
+      for (size_t i = n; i-- > 0;) {
+        if (trozo[i] != '\n') continue;
+        if (++saltos == max_lineas) { inicio = desde + i + 1; hallado = true; break; }
+      }
+      fin = desde;
+    }
+  }
+
+  if (!f.seek(inicio)) { f.close(); return false; }
+  char linea[480];
+  while (f.available()) {
+    const size_t n = f.readBytesUntil('\n', linea, sizeof(linea) - 1);
+    linea[n] = '\0';
+    size_t len = n;
+    if (len && linea[len - 1] == '\r') linea[--len] = '\0';
+    if (len) fn(linea, ctx);
+  }
+  f.close();
+  return true;
+}
+
 bool sdSelfTest(char* msg, size_t msg_len) {
   if (!g_sd_ok) {
     snprintf(msg, msg_len, "sin tarjeta (correcto: se sigue)");

@@ -230,4 +230,25 @@ bool decodificarTelemetry(const uint8_t* in, size_t len, Telemetry* t) {
   return r && ok;
 }
 
+// --- Routing ------------------------------------------------------------------
+
+size_t codificarRoutingAck(uint8_t* out, size_t cap) {
+  if (cap < 2) return 0;
+  out[0] = 0x18;               // (field 3 << 3) | varint: error_reason
+  out[1] = (uint8_t)ROUTING_ERROR_NONE;
+  return 2;
+}
+
+bool decodificarRoutingError(const uint8_t* in, size_t len, uint32_t* error) {
+  bool hay = false;
+  uint32_t e = 0;
+  const bool r = recorrer(in, len, [&hay, &e](uint32_t campo, uint8_t tipo,
+                                              const uint8_t*, size_t, uint64_t v) {
+    if (campo == 3 && tipo == 0) { hay = true; e = (uint32_t)v; }
+  });
+  if (!r || !hay) return false;
+  if (error) *error = e;
+  return true;
+}
+
 }  // namespace proto

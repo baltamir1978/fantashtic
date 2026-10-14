@@ -10,6 +10,7 @@
 #include "hal/power.h"
 #include "hal/sound.h"
 #include "mesh/history.h"
+#include "mesh/pending.h"
 #include "mesh/router.h"
 #include "proto/crypto.h"
 #include "proto/messages.h"
@@ -27,6 +28,8 @@ uint8_t  g_canal_hash = 0;
 
 mesh::BaseNodos g_nodos;
 mesh::Historial g_hist;
+mesh::Pendientes g_pend;   // direct messages waiting for their ACK
+mesh::Acuses     g_acuses; // ACKs we sent lately (retry vs. relay copy)
 
 uint32_t g_ultimo_msg_ms   = 0;
 uint32_t g_seleccionado    = 0;
@@ -69,8 +72,14 @@ size_t         claveLen()  { return PSK_LEN; }
 // 'hops' a -1 usa el limite de saltos configurado. Se pasa a 0 para el latido:
 // un paquete que nadie retransmite mide el enlace DIRECTO y ademas no multiplica
 // el gasto de aire por el numero de vecinos.
+// 'para' distinto de difusion lo manda a un solo nodo y pide ACK (want_ack):
+// entonces el paquete cifrado se guarda en g_pend para reintentarlo tal cual.
+// 'request_id' solo lo usan los ACK, para decir que mensaje confirman.
+uint32_t esperaAck() { return DM_ACK_TIMEOUT_MS + (esp_random() % DM_ACK_JITTER_MS); }
+
 uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool automatico,
-                    bool pedir_respuesta = false, int hops = -1) {
+                    bool pedir_respuesta = false, int hops = -1,
+                    uint32_t para = MESH_BROADCAST_ADDR, uint32_t request_id = 0) {
   if (!store::config().configurado) return 0;
 
   proto::Data d;
@@ -79,9 +88,16 @@ uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool autom
   memcpy(d.payload, carga, n);
   d.payload_len   = n;
   d.want_response = pedir_respuesta;
+  d.request_id    = request_id;
+
+  // Only a direct message asks for an ACK. An ACK never does: acknowledging an
+  // ACK would bounce forever.
+  const bool dirigido = (para != MESH_BROADCAST_ADDR);
+  const bool pide_ack = dirigido && portnum != PORTNUM_ROUTING;
 
   proto::Cabecera c;
-  c.to        = MESH_BROADCAST_ADDR;
+  c.to        = para;
+  c.want_ack  = pide_ack;
   c.from      = g_nodo;
   c.id        = proto::generarId(esp_random());
   const uint8_t lim = (hops >= 0) ? (uint8_t)hops : store::config().hop_limit;
@@ -97,7 +113,20 @@ uint32_t transmitir(uint32_t portnum, const uint8_t* carga, size_t n, bool autom
   // Se registra antes de que salga, para ignorar nuestros ecos y reconocer el
   // ACK implicito cuando alguien lo retransmita.
   g_hist.vistoOAnadir(c.from, c.id);
+  // If the table is full the message still went out, just without retries.
+  if (pide_ack && !g_pend.anadir(c.id, aire, len, millis(), esperaAck()))
+    Serial.printf("app: sin hueco para reintentar %08X\n", (unsigned)c.id);
   return c.id;
+}
+
+// ACK of a direct message: Routing{error_reason = NONE} back to its sender,
+// with the id it confirms in request_id. NOT automatic: if the soft duty limit
+// dropped it, the sender would retry and spend three packets instead of one.
+void enviarAck(uint32_t a, uint32_t id_confirmado) {
+  uint8_t b[4];
+  const size_t n = proto::codificarRoutingAck(b, sizeof(b));
+  if (n) transmitir(PORTNUM_ROUTING, b, n, false, false, -1, a, id_confirmado);
+  g_acuses.anotar(a, id_confirmado, millis());
 }
 
 // 'pedir_respuesta' pone want_response: "aqui estoy, y tu quien eres". Es lo que
@@ -199,9 +228,11 @@ void lanzarSos() {
   g_sos = (g_sos_enviados < SOS_BURST_COUNT) ? Sos::ENVIANDO : Sos::REPITIENDO;
 }
 
-void recibirTexto(uint32_t de, const char* txt, int16_t rssi, float snr) {
+void recibirTexto(uint32_t de, const char* txt, int16_t rssi, float snr, bool directo) {
   store::Mensaje m;
   m.nodo = de; m.ms = millis(); m.epoch = hal::gpsFix().epoch;
+  m.conv = directo ? de : 0;
+  m.leido = false;          // the chat screen marks it when it shows it
   m.rssi = rssi; m.snr = (int8_t)snr; m.estado = store::EST_RECIBIDO;
   snprintf(m.texto, sizeof(m.texto), "%s", txt);
   // Un SOS ajeno toma la pantalla y hace sonar la alarma. Se compara con el
@@ -276,6 +307,11 @@ void procesarEntrega(const proto::Cabecera& c, const radio::Paquete& p) {
     g_nodeinfo_pide  = true;
   }
 
+  // A direct message that asks for an ACK gets one, whatever it carries. It
+  // goes out after decrypting on purpose: a packet that does not decrypt was
+  // not delivered, and saying otherwise would hide a wrong key.
+  if (c.to == g_nodo && c.want_ack) enviarAck(c.from, c.id);
+
   switch (d.portnum) {
     case PORTNUM_TEXT_MESSAGE: {
       char txt[MSG_BUF_BYTES];
@@ -283,7 +319,20 @@ void procesarEntrega(const proto::Cabecera& c, const radio::Paquete& p) {
       memcpy(txt, d.payload, n);
       txt[n] = '\0';
       util::truncarSeguro(txt, sizeof(txt) - 1);
-      recibirTexto(c.from, txt, p.rssi, p.snr);
+      recibirTexto(c.from, txt, p.rssi, p.snr, c.to == g_nodo);
+      break;
+    }
+    case PORTNUM_ROUTING: {
+      // An ACK (or NAK) for one of our direct messages. It is addressed to us
+      // and request_id says which one.
+      uint32_t err = 0;
+      if (c.to != g_nodo || !d.request_id) break;
+      if (!proto::decodificarRoutingError(d.payload, d.payload_len, &err)) break;
+      g_pend.confirmar(d.request_id);
+      store::marcarEstado(d.request_id, err == proto::ROUTING_ERROR_NONE
+                                            ? store::EST_ENTREGADO : store::EST_FALLIDO);
+      Serial.printf("   ...ACK de %08X para %08X, error %u\n", (unsigned)c.from,
+                    (unsigned)d.request_id, (unsigned)err);
       break;
     }
     case PORTNUM_NODEINFO: {
@@ -349,7 +398,7 @@ void anunciarNombre() {
   g_prox_nodeinfo = millis() + 1000 + (esp_random() % 2000);
 }
 
-bool enviarTexto(const char* txt) {
+bool enviarTexto(const char* txt, uint32_t para) {
   if (!txt || !*txt) return false;
 
   char buf[MSG_BUF_BYTES];
@@ -357,10 +406,11 @@ bool enviarTexto(const char* txt) {
   util::truncarSeguro(buf, MSG_MAX_BYTES);
 
   const uint32_t id = transmitir(PORTNUM_TEXT_MESSAGE,
-                                 (const uint8_t*)buf, strlen(buf), false);
+                                 (const uint8_t*)buf, strlen(buf), false, false, -1,
+                                 para ? para : MESH_BROADCAST_ADDR);
 
   store::Mensaje m;
-  m.nodo = 0; m.ms = millis(); m.epoch = hal::gpsFix().epoch;
+  m.nodo = 0; m.conv = para; m.ms = millis(); m.epoch = hal::gpsFix().epoch;
   m.estado = id ? store::EST_ENVIANDO : store::EST_FALLIDO;
   snprintf(m.texto, sizeof(m.texto), "%s", buf);
   store::anadirMensaje(m);
@@ -392,6 +442,15 @@ void loop() {
       store::marcarEstado(c.id, store::EST_PROPAGADO);
       continue;
     }
+    // Our ACK got lost and the sender retried. No need to decrypt: the header
+    // says who and which packet, and that is all an ACK needs.
+    // Only a real retry, though: a relay's copy of the same try also comes in
+    // as a duplicate, seconds after the original, and was already acknowledged.
+    if (a == mesh::Accion::REACUSAR) {
+      if (g_acuses.reacusar(c.from, c.id, millis(), DM_REACK_MIN_MS))
+        enviarAck(c.from, c.id);
+      continue;
+    }
     if (a == mesh::Accion::DESCARTAR) continue;
 
     if (a == mesh::Accion::RETRANSMITIR || a == mesh::Accion::ENTREGAR_Y_RETRANSMITIR) {
@@ -408,6 +467,19 @@ void loop() {
   }
 
   const uint32_t ahora = millis();
+
+  // --- direct messages without an ACK yet: retry the same packet, or give up ---
+  const mesh::Pendientes::Tarea t = g_pend.revisar(ahora, esperaAck());
+  if (t.tipo == mesh::Pendientes::Tipo::REINTENTAR) {
+    Serial.printf("app: reintento de %08X\n", (unsigned)t.id);
+    // If the duty limit refuses it, it counts as a try anyway: the next one, or
+    // giving up, comes on schedule instead of hammering a full budget.
+    radio::radioEnviar(t.datos, t.len, false);
+  } else if (t.tipo == mesh::Pendientes::Tipo::AGOTADO) {
+    Serial.printf("app: %08X sin ACK tras %u reintentos\n", (unsigned)t.id,
+                  (unsigned)DM_RETRIES);
+    store::marcarEstado(t.id, store::EST_FALLIDO);
+  }
 
   // --- SOS ---
   switch (g_sos) {

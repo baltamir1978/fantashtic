@@ -174,9 +174,34 @@ void test_mensajes_truncados_se_rechazan() {
   TEST_ASSERT_FALSE(decodificarUser(c, sizeof(c), &u));
 }
 
+// The ACK of a direct message: Routing{error_reason = NONE}. error_reason is a
+// oneof member, so it is written even though it is 0.
+void test_routing_ack() {
+  uint8_t b[8];
+  const size_t n = proto::codificarRoutingAck(b, sizeof(b));
+  const uint8_t esperado[] = {0x18, 0x00};
+  TEST_ASSERT_EQUAL_size_t(2, n);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(esperado, b, 2);
+
+  uint32_t e = 99;
+  TEST_ASSERT_TRUE(proto::decodificarRoutingError(b, n, &e));
+  TEST_ASSERT_EQUAL_UINT32(proto::ROUTING_ERROR_NONE, e);
+
+  // An error (8 = NO_RESPONSE in mesh.proto) is read as such, not as delivered.
+  const uint8_t fallo[] = {0x18, 0x08};
+  TEST_ASSERT_TRUE(proto::decodificarRoutingError(fallo, 2, &e));
+  TEST_ASSERT_EQUAL_UINT32(8, e);
+
+  // A route request (field 1) has no error_reason: not an ACK.
+  const uint8_t ruta[] = {0x0A, 0x00};
+  TEST_ASSERT_FALSE(proto::decodificarRoutingError(ruta, 2, &e));
+  TEST_ASSERT_FALSE(proto::decodificarRoutingError(b, 0, &e));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_position_bytes_exactos);
+  RUN_TEST(test_routing_ack);
   RUN_TEST(test_position_ida_y_vuelta);
   RUN_TEST(test_position_coordenadas_negativas);
   RUN_TEST(test_position_salta_campos_desconocidos);

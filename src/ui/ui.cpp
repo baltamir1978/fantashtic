@@ -47,6 +47,11 @@ int  g_linea_n = 0;
 // Desplazamiento del historial: 0 = pegado al final.
 int  g_scroll = 0;
 
+// Conversation on screen: 0 = the whole group, otherwise the NodeNum of the
+// other side of a direct chat. It is also who ENTER sends to, so what is on
+// screen and where the message goes can never disagree.
+uint32_t g_conv = 0;
+
 // Seleccion en listas, y primera fila visible de la ventana. Las listas tienen
 // mas entradas que filas en pantalla (16 nodos, 7 ajustes), asi que la fila
 // resaltada y la primera pintada son dos cosas distintas.
@@ -104,6 +109,28 @@ void nombreCorto(uint32_t nodo, char* out, size_t cap) {
   const auto* n = app::nodos().buscar(nodo);
   if (n) app::nodos().nombreMostrar(*n, out, cap);
   else   snprintf(out, cap, "%04X", (unsigned)(nodo & 0xFFFF));
+}
+
+// Name of a conversation: "TODOS" for the group, the short name otherwise.
+void nombreConv(uint32_t conv, char* out, size_t cap) {
+  if (conv == 0) snprintf(out, cap, "%s", S_TODOS);
+  else           nombreCorto(conv, out, cap);
+}
+
+// Next or previous conversation: the group, then every node in the table, in
+// table order, wrapping around. A conversation whose node left the table is
+// treated as the group, so the arrows always lead somewhere sensible.
+uint32_t convVecina(uint32_t actual, int paso) {
+  uint32_t lista[MAX_NODES + 1];
+  size_t n = 0, pos = 0;
+  lista[n++] = 0;
+  for (size_t i = 0; i < app::nodos().capacidad(); i++) {
+    const auto* nd = app::nodos().porIndice(i);
+    if (!nd) continue;
+    if (nd->num == actual) pos = n;
+    lista[n++] = nd->num;
+  }
+  return lista[(pos + n + (size_t)(paso > 0 ? 1 : n - 1)) % n];
 }
 
 void barraEstado() {
@@ -300,7 +327,7 @@ int componerChat(int saltar, int visibles, LineaChat* out, bool* hay_mas) {
 
   for (int idx = (int)store::numMensajes() - 1; idx >= 0; idx--) {
     const auto* m = store::mensaje((size_t)idx);
-    if (!m) continue;
+    if (!m || m->conv != g_conv) continue;
 
     util::Trozo tr[CHAT_LINEAS_MSG];
     const int k = (int)util::envolver(m->texto, CHAT_TEXTO_W, medirFont2,
@@ -341,14 +368,17 @@ void pantallaChat() {
   int y = UI_STATUSBAR_H + 2;
   const int dy = UI_ROW_H;
 
-  if (store::numMensajes() == 0) {
-    D.setTextColor(0x6B4D);
-    D.drawString(S_SIN_MENSAJES, 6, y);
-  }
+  // On screen means read: this is what clears the unread marker.
+  store::marcarLeidos(g_conv);
 
   LineaChat lin[CHAT_LINEAS_MAX];
   bool hay_mas = false;
   const int n = componerChat(g_scroll, visibles, lin, &hay_mas);
+
+  if (n == 0) {
+    D.setTextColor(0x6B4D);
+    D.drawString(S_SIN_MENSAJES, 6, y);
+  }
 
   // Se compone de abajo arriba y se pinta al reves, para que las lineas queden
   // pegadas al final del historial aunque el ultimo mensaje ocupe cuatro filas.
@@ -363,7 +393,16 @@ void pantallaChat() {
       D.setTextColor(L.m->sos ? TFT_RED : colorDe(L.m->nodo));
       D.drawString(nom, 4, y);
 
-      if (L.m->nodo == 0) {
+      // "." sending, "+" someone relayed it, a tick when the recipient of a
+      // direct message confirmed it, "!" failed. Nothing for our messages
+      // reloaded from the card: their state then was not saved.
+      if (L.m->nodo == 0 && L.m->estado == store::EST_ENTREGADO) {
+        // Drawn, not a glyph: Font2 has no check mark.
+        for (int k = 0; k < 2; k++) {
+          D.drawLine(46, y + 8 + k, 49, y + 11 + k, TFT_GREEN);
+          D.drawLine(49, y + 11 + k, 54, y + 4 + k, TFT_GREEN);
+        }
+      } else if (L.m->nodo == 0 && L.m->estado != store::EST_ARCHIVO) {
         const char* marca = L.m->estado == store::EST_PROPAGADO ? "+"
                             : L.m->estado == store::EST_FALLIDO ? "!" : ".";
         D.setTextColor(L.m->estado == store::EST_PROPAGADO ? TFT_GREEN
@@ -393,13 +432,34 @@ void pantallaChat() {
     snprintf(b, sizeof(b), "%s -%d   %s", S_HISTORIAL, g_scroll, S_VOLVER_FIN);
     D.drawString(b, 4, base + 5);
   } else {
+    // Who this goes to, in their colour, right where the typing happens: a
+    // direct message sent to the whole group by mistake is exactly the kind of
+    // slip a child will not notice afterwards.
+    char para[8];
+    nombreConv(g_conv, para, sizeof(para));
+    D.setTextColor(g_conv ? colorDe(g_conv) : TFT_LIGHTGREY);
+    D.drawString(para, 3, base + 5);
+    const int x_txt = 3 + (int)D.textWidth(para) + 2;
+
     D.setTextColor(TFT_WHITE);
     // Se muestra la COLA de lo escrito, no el principio: al pasar de una linea,
     // un snprintf a 45 bytes dejaba el cursor fuera de la pantalla y se escribia
-    // a ciegas. Se reserva sitio para la cuenta de bytes de la derecha.
+    // a ciegas. Se reserva sitio para la cuenta de bytes y el aviso de la derecha.
     char cur[MSG_MAX_BYTES + 3];
     snprintf(cur, sizeof(cur), ">%s_", g_linea);
-    D.drawString(colaQueCabe(cur, TFT_W - 34), 3, base + 5);
+    D.drawString(colaQueCabe(cur, TFT_W - 40 - x_txt), x_txt, base + 5);
+
+    // With nothing typed, the hint on how to reach the other chats. Only when
+    // there is somewhere else to go.
+    if (g_linea_n == 0 && app::nodos().total() > 0) {
+      D.setTextColor(0x6B4D);
+      D.drawString(S_CHAT_CAMBIAR, x_txt + (int)D.textWidth(">_") + 6, base + 5);
+    }
+
+    // Unread messages in ANOTHER conversation: an orange dot by the counter.
+    if (store::noLeidosTotal() > store::noLeidos(g_conv))
+      D.fillCircle(TFT_W - 32, base + 11, 3, TFT_ORANGE);
+
     D.setTextDatum(top_right);
     D.setTextColor(g_linea_n > MSG_MAX_BYTES - 20 ? TFT_ORANGE : 0x6B4D);
     char c[8];
@@ -526,6 +586,9 @@ void pantallaNodos() {
       D.drawString(b, 140, cy);
     }
 
+    // This node wrote to us privately and it has not been read yet.
+    if (store::noLeidos(n->num)) D.fillCircle(172, cy, 3, TFT_ORANGE);
+
     y += dy;
   }
 
@@ -540,7 +603,7 @@ void pantallaNodos() {
   // aprenden solos si en algun sitio se dice lo que significan, y aqui hay
   // hueco: el pie ya existe y solo llevaba la ayuda de la tecla.
   char ayuda[40];
-  snprintf(ayuda, sizeof(ayuda), "%s", S_K_ENTER " brujula");
+  snprintf(ayuda, sizeof(ayuda), "%s", S_K_NODOS);
   const mesh::Nodo* sel = nodoDeFila(g_sel);
   if (sel) {
     const mesh::Enlace e = mesh::estadoEnlace(*sel, millis());
@@ -549,7 +612,7 @@ void pantallaNodos() {
              : e == mesh::Enlace::DEBIL   ? S_LINK_DEBIL
              : e == mesh::Enlace::RELEVO  ? S_LINK_RELEVO
                                           : S_LINK_DIRECTO,
-             S_K_ENTER " brujula");
+             S_K_NODOS);
   }
   pieLista(ayuda, g_sel, total, visibles);
   pieAviso();
@@ -781,14 +844,14 @@ struct Opcion { const char* etiqueta; };
 // de confirmacion. Agruparlas es deliberado: hay que bajar a proposito.
 const Opcion OPCIONES[] = {
     {S_SET_NOMBRE}, {S_SET_CORTO}, {S_SET_BRILLO}, {S_SET_VOLUMEN},
-    {S_SET_GPS}, {S_SET_INFO},
+    {S_SET_GPS}, {S_SET_RECUPERAR}, {S_SET_INFO},
     {S_SET_FRASE}, {S_SET_PRESET}, {S_SET_POTENCIA}, {S_SET_HOPS}, {S_SET_FABRICA},
 };
 constexpr int N_OPCIONES = sizeof(OPCIONES) / sizeof(OPCIONES[0]);
 
 // Indices, para no repartir numeros magicos por el manejador de teclas.
 enum {
-  OPT_NOMBRE = 0, OPT_CORTO, OPT_BRILLO, OPT_VOLUMEN, OPT_GPS, OPT_INFO,
+  OPT_NOMBRE = 0, OPT_CORTO, OPT_BRILLO, OPT_VOLUMEN, OPT_GPS, OPT_RECUPERAR, OPT_INFO,
   OPT_FRASE, OPT_PRESET, OPT_POTENCIA, OPT_SALTOS, OPT_FABRICA
 };
 constexpr int OPT_PRIMERA_DELICADA = OPT_FRASE;
@@ -829,6 +892,9 @@ void pantallaAjustes() {
                        nivelDe(c.volumen, VOLUMEN_MIN, VOLUMEN_MAX), UI_NIVELES); break;
       case OPT_GPS: snprintf(v, sizeof(v), "%s",
                              c.gps_activo ? S_ACTIVADO : S_DESACTIVADO); break;
+      // Takes effect at the next boot: the messages are already on screen.
+      case OPT_RECUPERAR: snprintf(v, sizeof(v), "%s",
+                                   c.recuperar_chat ? S_ACTIVADO : S_DESACTIVADO); break;
       case OPT_INFO: snprintf(v, sizeof(v), ">"); break;
       // La frase NO se guarda en ningun sitio, solo la clave derivada, asi que
       // aqui se muestra el nombre de canal: sale de la propia frase, y sirve
@@ -1480,10 +1546,30 @@ bool tecla(const hal::Evento& ev) {
       }
       return true;
 
+    case hal::Tecla::IZQUIERDA:
+    case hal::Tecla::DERECHA:
+      if (g_pant == SCR_CHAT) {
+        // Change conversation. What was typed stays: it goes to whichever chat
+        // is on screen when ENTER is pressed, and the name is right beside it.
+        g_conv = convVecina(g_conv, ev.tecla == hal::Tecla::DERECHA ? 1 : -1);
+        g_scroll = 0;
+        hal::beep();
+      } else if (g_pant == SCR_NODES && ev.tecla == hal::Tecla::DERECHA) {
+        // Straight into a private chat with the highlighted node.
+        if (const mesh::Nodo* n = nodoDeFila(g_sel)) {
+          g_conv = n->num;
+          g_pant = SCR_CHAT;
+          g_scroll = 0;
+          hal::beep();
+        }
+      }
+      return true;
+
     case hal::Tecla::ESC:
       if (g_pant == SCR_CHAT) {
         if (g_scroll)       g_scroll = 0;      // volver al final
         else if (g_linea_n) { g_linea[0] = '\0'; g_linea_n = 0; }
+        else if (g_conv)    g_conv = 0;        // from a private chat, back to TODOS
       } else {
         g_pant = SCR_CHAT;
       }
@@ -1492,7 +1578,7 @@ bool tecla(const hal::Evento& ev) {
     case hal::Tecla::ENTER:
       if (g_pant == SCR_CHAT) {
         if (g_linea_n) {
-          if (!app::enviarTexto(g_linea)) hal::beepError();
+          if (!app::enviarTexto(g_linea, g_conv)) hal::beepError();
           else                            hal::beep();
           g_linea[0] = '\0'; g_linea_n = 0;
           g_scroll = 0;
@@ -1527,6 +1613,10 @@ bool tecla(const hal::Evento& ev) {
           case OPT_GPS:
             c.gps_activo = !c.gps_activo;
             hal::gpsEncender(c.gps_activo);
+            store::guardar();
+            break;
+          case OPT_RECUPERAR:
+            c.recuperar_chat = !c.recuperar_chat;
             store::guardar();
             break;
 

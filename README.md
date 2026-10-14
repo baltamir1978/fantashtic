@@ -103,7 +103,7 @@ comodidad, sin necesidad de Fn.
 |---|---|
 | `Fn` + `;` | ↑ arriba |
 | `Fn` + `.` | ↓ abajo |
-| `Fn` + `,` / `Fn` + `/` | ← → *(sin uso hoy)* |
+| `Fn` + `,` / `Fn` + `/` | ← → cambiar de conversación en el chat; → en Nodos abre un chat privado |
 | `Fn` + `` ` `` o `` ` `` sola | ESC |
 | `Tab` | cambiar de pantalla |
 | `Enter` | enviar / elegir |
@@ -133,14 +133,33 @@ estabas mirando atrás, borra lo escrito. Marca de estado a la izquierda de cada
 |---|---|
 | `.` | enviado, sin confirmar |
 | `+` | **propagado**: alguien lo retransmitió y lo hemos oído volver (ACK implícito) |
-| `!` | fallido |
+| ✓ | **entregado**: el destinatario de un mensaje privado confirmó que le llegó |
+| `!` | fallido (en un privado: sin confirmación tras 2 reintentos) |
+
+**Conversaciones.** Hay un chat del grupo, `TODOS`, y uno **privado** con cada nodo. `←` `→`
+(`Fn`+`,` / `Fn`+`/`) pasan de uno a otro, y en Nodos `→` abre directamente el privado con el
+nodo resaltado. El destinatario sale **en la línea de escritura, en su color**, delante de lo
+que escribes: es donde se mira al enviar. `ESC` con la línea vacía vuelve a `TODOS`. Un punto
+naranja junto al contador avisa de mensajes sin leer **en otra conversación**, y en la lista de
+nodos marca a quien te ha escrito.
+
+Un privado **pide confirmación** y se reintenta (mismo paquete, 2 veces, cada ~12-15 s) hasta que
+llega, igual que en Meshtastic. **Privado no es secreto**: va cifrado con la clave del grupo,
+así que un nodo que lo releva podría leerlo; simplemente no lo enseña.
+
+**Historial en la microSD.** Todo se guarda en `/fantashtic/chat/chat.log` (texto separado por
+tabuladores, se abre en una hoja de cálculo) y, **si hay tarjeta**, al arrancar se recuperan los
+últimos 60 mensajes con su conversación. Se desactiva en Ajustes → *Recuperar chat*. Los
+ficheros mensuales de versiones anteriores (`AAAA-MM.log`, `sin-fecha.log`) se quedan donde
+estaban y no se recuperan.
 
 El límite son **180 bytes UTF-8**, no 180 caracteres: cada acento ocupa 2 y cada emoji 4.
 
 ### Nodos
 
 Quién se ha oído, hace cuánto, con qué señal, a cuántos saltos, con cuánta batería y a qué
-distancia. `↑` `↓` para moverse, `Enter` para saltar a la brújula de ese nodo. Caben 5 filas y
+distancia. `↑` `↓` para moverse, `Enter` para saltar a la brújula de ese nodo, `→` para
+escribirle en privado. Caben 5 filas y
 la tabla admite 16, así que la lista arrastra: el contador del pie (`4/12`) avisa de que hay
 filas fuera de la ventana.
 
@@ -177,7 +196,7 @@ llegado ni un byte por el UART es el cable, y si llegan bytes pero no hay soluci
 
 ### Ajustes
 
-`↑` `↓` para moverse, `Enter` para actuar. Once filas, todas funcionales:
+`↑` `↓` para moverse, `Enter` para actuar. Doce filas, todas funcionales:
 
 | Fila | Qué hace `Enter` |
 |---|---|
@@ -186,6 +205,7 @@ llegado ni un byte por el UART es el cable, y si llegan bytes pero no hay soluci
 | **Brillo** | sube un nivel de **1 a 5** y da la vuelta |
 | **Volumen** | igual, con un pitido para oírlo |
 | **GPS** | enciende y apaga |
+| **Recuperar chat** | si al arrancar se cargan los últimos mensajes de la microSD (vale para el siguiente arranque) |
 | **Información** | pantalla de solo lectura; `ESC` para salir |
 | **Frase del grupo** | editor **+ confirmación** |
 | **Alcance / velocidad** | Normal · Máximo alcance · Rápido, **+ confirmación** |
@@ -346,13 +366,15 @@ Lo que falta, por orden de impacto:
 | Reloj y tick adaptativos | ✓ 80 MHz sin perder radio ni GPS |
 | Light sleep | ✗ **descartado por medida**: deja el nodo sordo a los 30 s |
 
-**64 pruebas en verde en el ordenador** (`pio test -e native`): protocolo, router, ciclo de
-trabajo, criptografía, geodesia, UTF-8, tabla de nodos y los mensajes `Position` / `User` /
-`Telemetry`. El paquete que sale por antena se contrasta contra vectores generados con
+**95 pruebas en verde en el ordenador** (`pio test -e native`): protocolo, router, ciclo de
+trabajo, criptografía, geodesia, UTF-8, tabla de nodos, los mensajes `Position` / `User` /
+`Telemetry` / `Routing`, los reintentos de los privados y el formato del historial. El paquete que sale por antena se contrasta contra vectores generados con
 `pycryptodome`.
 
 Lo que **no** está verificado:
 
+- **Mensajes privados y recuperación del historial**: escritos y probados en el ordenador,
+  sin compilar todavía para el ESP32 ni probar en el aparato.
 - **Retransmisión con tres aparatos**, la única que no se puede probar con dos. Es la que falta
   de verdad: es una función del producto.
 - **La geometría de las pantallas.** Las cinco están calculadas sobre 240 × 135, no vistas. El
